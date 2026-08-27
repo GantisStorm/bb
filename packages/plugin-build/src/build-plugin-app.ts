@@ -427,6 +427,7 @@ async function buildTailwindCss(
   rootDir: string,
   pluginId: string,
   toolchain: PluginBuildToolchain,
+  dependencySources: ScannerSource[],
   bundledInputs: ReadonlySet<string>,
 ): Promise<string> {
   // A dynamic specifier is opaque to TS, so restate the module types here.
@@ -477,7 +478,6 @@ async function buildTailwindCss(
   });
   const candidates = new Set(ownScanner.scan());
 
-  const dependencySources = await readDependencyTailwindSources(rootDir);
   if (dependencySources.length > 0) {
     // `files` resolves the globs without reading anything; only the bundled
     // subset is read and scanned. Compare by filesystem identity: a workspace
@@ -562,6 +562,7 @@ export async function buildPluginApp(
   const { appEntry, packageName, pluginVersion } =
     await readPluginAppConfig(rootDir);
   const pluginId = derivePluginId(packageName);
+  const dependencySources = await readDependencyTailwindSources(rootDir);
   const distDir = join(rootDir, "dist");
   await mkdir(distDir, { recursive: true });
   const jsPath = join(distDir, "app.js");
@@ -588,7 +589,10 @@ export async function buildPluginApp(
       outfile: stagedJsPath,
       absWorkingDir: rootDir,
       bundle: true,
-      metafile: true,
+      // The metafile can contain thousands of bundled inputs. Only request it
+      // when a direct dependency opts its sources into Tailwind scanning;
+      // ordinary plugins scan their own tree and never consume the manifest.
+      metafile: dependencySources.length > 0,
       format: "esm",
       platform: "browser",
       target: "es2022",
@@ -624,12 +628,22 @@ export async function buildPluginApp(
     } catch (error) {
       if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
+    let bundledInputs: ReadonlySet<string> = new Set();
+    if (dependencySources.length > 0) {
+      if (bundle.metafile === undefined) {
+        throw new Error(
+          "esbuild did not return the metafile required for dependency Tailwind scanning",
+        );
+      }
+      bundledInputs = await bundledInputPaths(bundle.metafile, rootDir);
+    }
     const tailwindCss = (
       await buildTailwindCss(
         rootDir,
         pluginId,
         toolchain,
-        await bundledInputPaths(bundle.metafile, rootDir),
+        dependencySources,
+        bundledInputs,
       )
     ).trimEnd();
     // Tailwind's own optimizer (lightningcss, the same pass the host's Vite
