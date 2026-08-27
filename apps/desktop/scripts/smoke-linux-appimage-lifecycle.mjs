@@ -321,6 +321,27 @@ async function serverIsHealthy(serverUrl) {
   }
 }
 
+async function hostDaemonIsReady({ daemonPort, serverUrl }) {
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${String(daemonPort)}/status`,
+      { signal: AbortSignal.timeout(2_000) },
+    );
+    if (!response.ok) {
+      return false;
+    }
+    const status = await response.json();
+    return (
+      typeof status === "object" &&
+      status !== null &&
+      status.connected === true &&
+      status.serverUrl === serverUrl
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function waitForChildExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return true;
@@ -469,8 +490,31 @@ async function smokeLinuxAppImageLifecycle() {
       retryErrors: false,
     });
     await waitFor({
-      describe: `bb health at ${runtime.serverUrl}`,
-      predicate: async () => await serverIsHealthy(runtime.serverUrl),
+      describe: `bb and its host daemon at ${runtime.serverUrl} to be ready`,
+      predicate: async () => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(
+            `AppImage exited before bb became ready: code=${String(
+              child.exitCode,
+            )} signal=${String(child.signalCode)}.\n${formatProcessOutput({
+              stdout,
+              stderr,
+            })}`,
+          );
+        }
+        if (!(await processIsLive(runtime.pid))) {
+          throw new Error(
+            `The owned runtime exited before bb became ready.\n${formatProcessOutput(
+              { stdout, stderr },
+            )}`,
+          );
+        }
+        return await hostDaemonIsReady({
+          daemonPort,
+          serverUrl: runtime.serverUrl,
+        });
+      },
+      retryErrors: false,
     });
 
     const guiProcess = await readProcess(child.pid);
