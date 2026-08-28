@@ -521,9 +521,9 @@ export function RootComposeView() {
       const {
         providerDecidedByPluginEntry,
         providerId,
-        // Applied once below so a scheduled fork holds too: the fork branch
+        // Applied once below so a scheduled fork parks too: the fork branch
         // builds its request from the seed and would otherwise drop it.
-        holdUntil,
+        sendAt,
         ...requestFields
       } = request;
       const createRequest =
@@ -548,9 +548,7 @@ export function RootComposeView() {
             });
       if (createRequest === null) return;
       const thread = await createThread.mutateAsync(
-        holdUntil === undefined
-          ? createRequest
-          : { ...createRequest, holdUntil },
+        sendAt === undefined ? createRequest : { ...createRequest, sendAt },
       );
       setLastCreatedThreadId(thread.id);
       setForkSeed(null);

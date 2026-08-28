@@ -26,6 +26,7 @@ import {
   PLUGIN_SDK_MAJOR,
   PLUGIN_SDK_VERSION,
   type Thread,
+  type ThreadQueuedMessage,
 } from "@bb/domain";
 import {
   buildPluginApp,
@@ -63,7 +64,6 @@ import type {
   PluginDispatchGateStage,
   PluginSettingDescriptors,
 } from "@get-bb/plugin-sdk";
-import type { DispatchHoldResponse } from "@bb/server-contract";
 import type { DispatchGateRegistration } from "./dispatch-gate-registry.js";
 import {
   isPluginSdkRangeSatisfied,
@@ -715,11 +715,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     });
   }
 
-  function buildDispatchHoldEmitter(
-    event: Extract<PluginThreadEventName, `dispatch.${string}`>,
-  ): (hold: DispatchHoldResponse) => void {
-    return (hold) => {
-      emitThreadEvent(event, () => ({ hold }));
+  function buildQueueEventEmitter(
+    event: Extract<PluginThreadEventName, `queue.${string}`>,
+  ): (entry: ThreadQueuedMessage) => void {
+    return (entry) => {
+      emitThreadEvent(event, () => ({ entry }));
     };
   }
 
@@ -1289,21 +1289,29 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       reportAgentToolProblem: (message) => {
         reportAgentToolProblem(row.id, message);
       },
-      releaseDispatchHold: ({ holdId, amend }) => {
-        if (!deps.dispatchHolds) {
+      clearQueueWait: ({ queuedMessageId, amend }) => {
+        if (!deps.queueWaits) {
           return Promise.reject(
-            new Error("dispatch holds are unavailable in this host"),
+            new Error("the dispatch queue is unavailable in this host"),
           );
         }
-        return deps.dispatchHolds.release({ pluginId: row.id, holdId, amend });
+        return deps.queueWaits.clear({
+          pluginId: row.id,
+          queuedMessageId,
+          amend,
+        });
       },
-      reportDispatchHold: ({ holdId, update }) => {
-        if (!deps.dispatchHolds) {
+      reportQueueWait: ({ queuedMessageId, update }) => {
+        if (!deps.queueWaits) {
           return Promise.reject(
-            new Error("dispatch holds are unavailable in this host"),
+            new Error("the dispatch queue is unavailable in this host"),
           );
         }
-        return deps.dispatchHolds.report({ pluginId: row.id, holdId, update });
+        return deps.queueWaits.report({
+          pluginId: row.id,
+          queuedMessageId,
+          update,
+        });
       },
       appendThreadNote: ({ threadId, note }) => {
         if (!deps.appendThreadNote) {
@@ -1704,7 +1712,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     checkPluginSdkRange,
     disposeAll,
     disposeOne,
-    buildDispatchHoldEmitter,
+    buildQueueEventEmitter,
     emitThreadEvent,
     handlerStats,
     handleUncaughtException,
