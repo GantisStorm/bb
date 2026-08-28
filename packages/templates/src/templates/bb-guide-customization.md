@@ -82,7 +82,8 @@ false in packaged builds. Turn it on to show raw provider events bb does not yet
 understand; development builds always show these diagnostic rows.
 
 Settings → General also includes `steerActiveThreadOnEnter`, which defaults to
-false. Outside an open typeahead menu, enabling it makes Enter steer a running
+true for a new install and to false for an install that ran an earlier
+version. Outside an open typeahead menu, enabling it makes Enter steer a running
 thread and Command+Enter queue a follow-up; when disabled, those actions are
 reversed. Shift+Enter inserts a newline. On coarse-pointer touch devices, the
 software-keyboard Return path inserts a newline. iPadOS WebKit preserves these
