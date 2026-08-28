@@ -39,9 +39,7 @@ import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/pr
 import type { PromptBoxHandle } from "@/components/promptbox/PromptBoxInternal";
 import { type PluginComposerHost } from "@/components/plugin/plugin-composer-host";
 import { newThreadEnvironmentArgsToSeed } from "@/components/plugin/new-thread-environment-seed";
-import { mergePluginInputs } from "@/components/pickers/execution-picker-selection";
 import { takeComposerPluginInputs } from "@/lib/composer-plugin-inputs";
-import { useExecutionPickerEntrySelection } from "@/hooks/useExecutionPickerEntrySelection";
 import { useUploadPromptAttachment } from "@/hooks/mutations/project-mutations";
 import { selectPrimaryHost, useHosts } from "@/hooks/queries/host-queries";
 import { useProjectDefaultExecutionOptions } from "@/hooks/queries/project-default-execution-options-query";
@@ -165,24 +163,14 @@ export interface NewThreadComposerState {
 }
 
 /**
- * What bb's own root compose emits — `NewThreadRequest` plus the two facts
- * only bb can act on.
+ * What bb's own root compose emits — `NewThreadRequest` plus the facts only bb
+ * can act on.
  *
  * Deliberately an app-local superset rather than a widening of the SDK's
  * `NewThreadRequest`: that type exists so a plugin can forward it verbatim to
- * `threads.spawn`, so `providerId` has to stay a required, real provider
- * there. Here `providerId` is the composer's resolved fallback, and
- * `providerDecidedByPluginEntry` says whether the caller must drop it.
+ * `threads.spawn`, and these fields are bb's create request alone.
  */
 export interface NewThreadComposerSubmission extends NewThreadRequest {
-  /**
-   * True when a live plugin picker entry is selected. The caller MUST omit
-   * `providerId` from the create request so the server resolves the project
-   * default and the plugin's `thread.create` gate amends it — a plugin's
-   * choice is recorded with `plugin` provenance and never promoted to a
-   * project execution default.
-   */
-  providerDecidedByPluginEntry: boolean;
   /** Side-channel input for dispatch gates, keyed by plugin id. */
   pluginInputs?: PluginInputs;
   /**
@@ -203,12 +191,6 @@ export interface NewThreadComposerProps {
   resetKey?: string | number | null;
   preferReadyProviderWhenUnset?: boolean;
   onSubmit: (request: NewThreadComposerSubmission) => void | Promise<void>;
-  /**
-   * Offer plugin-registered picker entries ("Auto"). Only bb's own root
-   * compose passes true: an entry submits without a provider, which only a
-   * caller that owns the create request can honor.
-   */
-  allowPluginExecutionEntries?: boolean;
   focusRequest?: number;
   children: (state: NewThreadComposerState) => ReactNode;
 }
@@ -405,7 +387,6 @@ export function NewThreadComposer({
   seed,
   resetKey,
   preferReadyProviderWhenUnset = false,
-  allowPluginExecutionEntries = false,
   onSubmit,
   focusRequest,
   children,
@@ -611,9 +592,6 @@ export function NewThreadComposer({
   const selectedThreadModel = activeModel?.model ?? selectedModel;
 
   const promptDraft = usePromptDraftStorage(draftStorage);
-  const pluginEntrySelection = useExecutionPickerEntrySelection(
-    allowPluginExecutionEntries,
-  );
   const textEffects = useComposerTextEffects(promptDraft.storageKey);
   const promptOptionDraftSnapshotRef = useRef<PromptDraftState | null>(null);
   const snapshotDraftBeforeOptionChange = useCallback(() => {
@@ -1121,7 +1099,7 @@ export function NewThreadComposer({
    *
    * `sendAt` is the only difference between them: everything the user chose
    * on screen — provider, model, reasoning level, service tier, permission
-   * mode, environment, attachments, @-mentions, plugin picker entry — is
+   * mode, environment, attachments, @-mentions — is
    * resolved here and travels with a scheduled create exactly as it does with
    * an immediate one. That is the whole reason scheduling goes through the
    * composer instead of a plugin calling `threads.spawn` itself: none of this
@@ -1157,15 +1135,7 @@ export function NewThreadComposer({
         ...executionInputSources,
         ...seededExecutionInputSources,
       };
-      // A live plugin picker entry submits with NO providerId: the server
-      // resolves the project default and the plugin's thread.create gate
-      // amends it. A stale entry (plugin disabled since the user chose it)
-      // degrades to the ordinary provider submission.
-      const entrySubmission = pluginEntrySelection.submission(selectedProviderId);
-      const pluginInputs = mergePluginInputs(
-        takeComposerPluginInputs(promptDraft.storageKey),
-        entrySubmission.pluginInputs,
-      );
+      const pluginInputs = takeComposerPluginInputs(promptDraft.storageKey);
       const request: NewThreadComposerSubmission = {
         projectId,
         providerId: selectedProviderId,
@@ -1178,7 +1148,6 @@ export function NewThreadComposer({
         input,
         ...(pluginInputs === undefined ? {} : { pluginInputs }),
         ...(sendAt === null ? {} : { sendAt }),
-        providerDecidedByPluginEntry: entrySubmission.providerId === undefined,
       };
       isSubmittingRef.current = true;
       setIsSubmitting(true);
@@ -1217,7 +1186,6 @@ export function NewThreadComposer({
       selectedThreadModel,
       serviceTier,
       supportsServiceTier,
-      pluginEntrySelection,
     ],
   );
 
@@ -1249,14 +1217,6 @@ export function NewThreadComposer({
       setSelectedProviderId,
       snapshotDraftBeforeOptionChange,
     ],
-  );
-  const handlePluginEntryChange = useCallback(
-    (token: string | null) => {
-      if (token === pluginEntrySelection.selectedToken) return;
-      snapshotDraftBeforeOptionChange();
-      pluginEntrySelection.setSelectedToken(token);
-    },
-    [pluginEntrySelection, snapshotDraftBeforeOptionChange],
   );
   const handleModelChange = useCallback(
     (value: string) => {
@@ -1466,23 +1426,12 @@ export function NewThreadComposer({
               options: reasoningOptions,
               onChange: handleReasoningChange,
             },
-            ...(allowPluginExecutionEntries
-              ? {
-                  pluginEntries: {
-                    entries: pluginEntrySelection.entries,
-                    order: pluginEntrySelection.order,
-                    selectedToken: pluginEntrySelection.selectedToken,
-                    onChange: handlePluginEntryChange,
-                  },
-                }
-              : {}),
           }}
         />
       );
     },
     [
       activeModel,
-      allowPluginExecutionEntries,
       attachmentError,
       branchEnvironmentMode,
       branchOptions,
@@ -1509,9 +1458,7 @@ export function NewThreadComposer({
       handleServiceTierChange,
       handleSubmit,
       handleWorktreeChange,
-      handlePluginEntryChange,
       hasMultipleProviders,
-      pluginEntrySelection,
       isCopyingAttachments,
       isLoadingModels,
       isProjectless,

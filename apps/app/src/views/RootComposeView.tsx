@@ -513,14 +513,7 @@ export function RootComposeView() {
         isForkDraft: forkSeed !== null,
         navigateToThreadAfterCreate,
       });
-      // A plugin picker entry means the user chose "let this plugin decide",
-      // so the request must carry no provider at all: the server resolves the
-      // project default and the plugin's thread.create gate amends it. Sending
-      // the composer's fallback provider instead would record a user choice
-      // the user never made, and could be remembered as a project default.
       const {
-        providerDecidedByPluginEntry,
-        providerId,
         // Applied once below so a scheduled fork parks too: the fork branch
         // builds its request from the seed and would otherwise drop it.
         sendAt,
@@ -530,7 +523,6 @@ export function RootComposeView() {
         forkSeed === null
           ? {
               ...requestFields,
-              ...(providerDecidedByPluginEntry ? {} : { providerId }),
               ...(rootComposeSectionId
                 ? { sectionId: rootComposeSectionId }
                 : {}),
@@ -598,7 +590,6 @@ export function RootComposeView() {
       seed={composerSeed}
       resetKey={forkSeed?.sourceThreadId ?? null}
       preferReadyProviderWhenUnset={forkSeed === null}
-      allowPluginExecutionEntries={forkSeed === null}
       onSubmit={handleSubmit}
     >
       {(composer) => (
