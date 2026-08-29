@@ -631,7 +631,7 @@ function Frame({ view, themeName, mode }: { view: View; themeName: string; mode:
 }
 
 // ---------------------------------------------------------------------------
-// Area 2 — Style sheet. The specimen inventory lives in taxonomy.ts. Direct
+// Area 4 — Style sheet. The specimen inventory lives in taxonomy.ts. Direct
 // values are compact shared controls; the larger generated families remain
 // available for inspection in a collapsed read-only disclosure.
 // ---------------------------------------------------------------------------
@@ -843,13 +843,21 @@ function TokenRow({ name, computed, contrastAgainst, contrastSpec }: { name: str
 // Layout system, level 1: inside a content area.
 //
 // Typographic hierarchy is explicit and shared, so every surface differentiates
-// the same five roles: section > category > control label > value > support.
+// the same six roles: section > category > control label > value > sublabel >
+// support. The first three stay anchored to foreground; values and explanation
+// recede without dropping below the theme's own readable ink ladder.
 // ---------------------------------------------------------------------------
 
-const TEXT_CATEGORY: CSSProperties = { fontSize: 10.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: v("muted-foreground") };
-const TEXT_LABEL: CSSProperties = { fontSize: 12.5, fontWeight: 500, color: v("foreground") };
-const TEXT_VALUE: CSSProperties = { fontFamily: MONO, fontSize: 11.5, fontVariantNumeric: "tabular-nums", color: v("muted-foreground") };
-const TEXT_SUPPORT: CSSProperties = { fontSize: 12, lineHeight: "17px", color: v("muted-foreground") };
+const TEXT_SECTION: CSSProperties = { margin: 0, fontSize: 14, lineHeight: "20px", fontWeight: 650, letterSpacing: "-0.01em", color: v("foreground") };
+const TEXT_CATEGORY: CSSProperties = { margin: 0, fontSize: 10.5, lineHeight: "16px", fontWeight: 650, letterSpacing: "0.065em", textTransform: "uppercase", color: v("foreground") };
+const TEXT_LABEL: CSSProperties = { fontSize: 12.5, lineHeight: "18px", fontWeight: 550, color: v("foreground") };
+const TEXT_VALUE: CSSProperties = { fontFamily: MONO, fontSize: 11, lineHeight: "16px", fontVariantNumeric: "tabular-nums", color: v("muted-foreground") };
+const TEXT_SUBLABEL: CSSProperties = { fontSize: 10, lineHeight: "15px", fontWeight: 600, letterSpacing: "0.045em", textTransform: "uppercase", color: v("muted-foreground") };
+const TEXT_SUPPORT: CSSProperties = { fontSize: 11.5, lineHeight: "17px", color: v("muted-foreground") };
+
+function AreaHeading({ area }: { area: "overlays" | "components" | "stylesheet" }) {
+  return <h2 id={`tp-${area}-heading`} data-tp-role="section" style={TEXT_SECTION}>{AREA_TITLES[area]}</h2>;
+}
 
 function SpecimenGrid({ min = 260, children }: { min?: number; children: ReactNode }) {
   return (
@@ -863,7 +871,7 @@ function SpecimenGrid({ min = 260, children }: { min?: number; children: ReactNo
 function SpecimenBlock({ id, title, wide = false, children }: { id?: string; title: string; wide?: boolean; children: ReactNode }) {
   return (
     <div data-tp-block={id} style={{ marginBottom: 18, gridColumn: wide ? "1 / -1" : undefined, minWidth: 0 }}>
-      <div data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 8 }}>{title}</div>
+      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 8 }}>{title}</h3>
       {children}
     </div>
   );
@@ -1031,8 +1039,8 @@ function SliderField({ specimen, label, value, min, max, step, unit, displayValu
   return (
     <div data-tp-specimen={specimen} style={{ minWidth: 0, padding: "3px 0" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-        <span style={{ ...TEXT_LABEL, flex: 1, minWidth: 0 }}>{label}</span>
-        <span style={{ ...TEXT_VALUE, fontSize: 10.5 }}>{formatted}</span>
+        <span data-tp-role="label" style={{ ...TEXT_LABEL, flex: 1, minWidth: 0 }}>{label}</span>
+        <span data-tp-role="value" style={TEXT_VALUE}>{formatted}</span>
       </div>
       <Slider
         aria-label={label}
@@ -1060,7 +1068,7 @@ function FontField({ specimen, label, value, options, disabled, onChange }: {
   const selectedLabel = options.find((option) => option.value === value)?.label ?? (firstFamily(value) || "Current");
   return (
     <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateColumns: "54px minmax(0, 1fr)", alignItems: "center", gap: 6, minHeight: 32 }}>
-      <span style={{ ...TEXT_LABEL }}>{label}</span>
+      <span data-tp-role="label" style={TEXT_LABEL}>{label}</span>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
         <SelectTrigger aria-label={label} className="h-7 min-w-0 px-2 text-xs" style={{ fontFamily: value }}>
           <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{selectedLabel}</span>
@@ -1104,7 +1112,7 @@ function ContrastFloor({ colors }: { colors: DirectColors }) {
   );
   return (
     <div data-tp-contrast-floor="" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 28, marginTop: 4 }}>
-      <span style={{ ...TEXT_LABEL }}>Contrast floor</span>
+      <span data-tp-role="label" style={TEXT_LABEL}>Contrast floor</span>
       {item("Canvas / ink", canvas)}
       {item("Sidebar", sidebar)}
     </div>
@@ -1141,7 +1149,7 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
           const key = COLOR_STATE_KEYS[control.id];
           return (
             <label key={control.id} data-tp-specimen={`color:${control.id}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 34 }}>
-              <span style={{ ...TEXT_LABEL, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{control.label}</span>
+              <span data-tp-role="label" style={{ ...TEXT_LABEL, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{control.label}</span>
               <BbInput
                 type="color"
                 aria-label={`${control.label} color`}
@@ -1155,7 +1163,7 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
                 }}
                 onBlur={flush}
               />
-              <span style={{ ...TEXT_VALUE, fontSize: 10.5, textAlign: "right" }}>{values[key].slice(0, 7)}</span>
+              <span data-tp-role="value" style={{ ...TEXT_VALUE, textAlign: "right" }}>{values[key].slice(0, 7)}</span>
             </label>
           );
         })}
@@ -1212,7 +1220,7 @@ function DerivedValues({ computed }: { computed: Computed }) {
 }
 
 // ---------------------------------------------------------------------------
-// Area 4 — interactive overlays. Every launcher is a real button that opens a
+// Area 2 — interactive overlays. Every launcher is a real button that opens a
 // real bb surface, so it carries a full affordance set: pointer cursor, hover
 // fill, focus ring, and an open (selected) state. Radix triggers publish
 // `data-state="open"`; the two hover surfaces are controlled here.
@@ -1401,7 +1409,7 @@ function OverlaySpecimens({ vertical = false }: { vertical?: boolean }) {
 function SystemBlock({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <div data-tp-block={id} style={{ minWidth: 0 }}>
-      <div data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 6 }}>{title}</div>
+      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 7 }}>{title}</h3>
       {children}
     </div>
   );
@@ -1520,9 +1528,9 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
     <SystemBlock id="shadow" title="Shadow">
       <SliderField specimen="shadow:y" label="Y" value={value.y} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("y", next, false)} onCommit={(next) => update("y", next, true)} />
       <SliderField specimen="shadow:blur" label="Blur" value={value.blur} min={0} max={48} step={1} unit="px" disabled={disabled} onChange={(next) => update("blur", next, false)} onCommit={(next) => update("blur", next, true)} />
-      <div style={{ ...TEXT_CATEGORY, marginTop: 3 }}>Color + opacity · {mode}</div>
+      <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginTop: 4 }}>Color + opacity · {mode}</div>
       <label data-tp-specimen="shadow:color" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 32 }}>
-        <span style={{ ...TEXT_LABEL }}>Color</span>
+        <span data-tp-role="label" style={TEXT_LABEL}>Color</span>
         <BbInput
           type="color"
           aria-label="Shadow color"
@@ -1538,7 +1546,7 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
           }}
           onBlur={flushColor}
         />
-        <span style={{ ...TEXT_VALUE, fontSize: 10.5, textAlign: "right" }}>{value.color.slice(0, 7)}</span>
+        <span data-tp-role="value" style={{ ...TEXT_VALUE, textAlign: "right" }}>{value.color.slice(0, 7)}</span>
       </label>
       <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", next, false)} onCommit={(next) => update("opacity", next, true)} />
       <div data-tp-shadow-preview="" style={{ height: 42, margin: "5px 9px 7px", borderRadius: RADIUS_MD, background: v("card"), boxShadow: `${value.x}px ${value.y}px ${value.blur}px ${value.spread}px color-mix(in oklab, ${value.color} ${value.opacity}%, transparent)`, display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>
@@ -1584,7 +1592,7 @@ function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommi
   const setShadow = (shadow: ShadowValues) => setValues((current) => ({ ...current, shadow }));
   return (
     <div aria-busy={busy || undefined}>
-      <div data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Mode colors</div>
+      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 7 }}>Mode colors</h3>
       <ColorEditor
         values={values.colors}
         disabled={disabled}
@@ -1616,69 +1624,85 @@ function ComponentsSection() {
   const [compact, setCompact] = useState(false);
   const [checked, setChecked] = useState(true);
   const [agreed, setAgreed] = useState(false);
+  const compactBlock = (wide = false): CSSProperties => ({ minWidth: 0, gridColumn: wide ? "1 / -1" : undefined });
+  const compactLabel: CSSProperties = { ...TEXT_LABEL, minWidth: 0, fontSize: 11.5, lineHeight: "16px" };
   return (
-    <SpecimenGrid min={280}>
-      <SpecimenBlock id="buttons" title="Buttons" wide>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <BbButton size="sm" className="cursor-pointer">Default</BbButton>
-          <BbButton size="sm" variant="secondary" className="cursor-pointer">Secondary</BbButton>
-          <BbButton size="sm" variant="outline" className="cursor-pointer">Outline</BbButton>
-          <BbButton size="sm" variant="ghost" className="cursor-pointer">Ghost</BbButton>
-          <BbButton size="sm" variant="destructive" className="cursor-pointer">Delete</BbButton>
-          <BbButton size="sm" variant="outline" disabled>Disabled</BbButton>
+    <div data-tp-components="" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(116px, 1fr))", columnGap: 10, rowGap: 14 }}>
+      <div data-tp-block="buttons" style={compactBlock(true)}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Buttons</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 4 }}>
+          <BbButton size="sm" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Default</BbButton>
+          <BbButton size="sm" variant="secondary" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Secondary</BbButton>
+          <BbButton size="sm" variant="outline" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Outline</BbButton>
+          <BbButton size="sm" variant="ghost" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Ghost</BbButton>
+          <BbButton size="sm" variant="destructive" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Delete</BbButton>
+          <BbButton size="sm" variant="outline" className="h-7 min-w-0 px-2 text-xs" disabled>Disabled</BbButton>
         </div>
-      </SpecimenBlock>
-      <SpecimenBlock id="badges" title="Badges" wide>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+      </div>
+      <div data-tp-block="badges" style={compactBlock(true)}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Badges</h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
           <Badge tone="success"><Dot color={v("success")} size={6} /> Running</Badge><Badge tone="warning">Attention</Badge>
           <Badge tone="destructive">Failed</Badge><Badge tone="merged">Merged</Badge><Badge tone="outline">branch</Badge>
         </div>
-      </SpecimenBlock>
-      <SpecimenBlock id="inputs" title="Inputs">
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <BbInput aria-label="Search threads" placeholder="Search threads…" value={search} onChange={(event) => setSearch(event.target.value)} />
-          <BbInput aria-label="Filter" value={filter} onChange={(event) => setFilter(event.target.value)} />
-          <BbInput aria-label="Disabled input" value="Disabled" disabled readOnly />
+      </div>
+      <div data-tp-block="inputs" style={compactBlock(true)}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Inputs</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <BbInput className="h-7 px-2 text-xs" aria-label="Search threads" placeholder="Search threads…" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <BbInput className="h-7 px-2 text-xs" aria-label="Filter" value={filter} onChange={(event) => setFilter(event.target.value)} />
+          <BbInput className="h-7 px-2 text-xs" aria-label="Disabled input" value="Disabled" disabled readOnly />
         </div>
-      </SpecimenBlock>
-      <SpecimenBlock id="switch" title="Switch">
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", ...TEXT_LABEL }}>
+      </div>
+      <div data-tp-block="switch" style={compactBlock()}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Switch</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbSwitch checked={notify} onCheckedChange={setNotify} className="cursor-pointer" /> Notifications
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", ...TEXT_LABEL }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbSwitch checked={compact} onCheckedChange={setCompact} className="cursor-pointer" /> Compact rows
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, ...TEXT_LABEL, opacity: 0.55 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, ...compactLabel, color: v("muted-foreground") }}>
             <BbSwitch checked disabled /> Disabled
           </label>
         </div>
-      </SpecimenBlock>
-      <SpecimenBlock id="checkbox" title="Checkbox">
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", ...TEXT_LABEL }}>
+      </div>
+      <div data-tp-block="checkbox" style={compactBlock()}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Checkbox</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbCheckbox checked={checked} onCheckedChange={(next) => setChecked(next === true)} className="cursor-pointer" /> Include drafts
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", ...TEXT_LABEL }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbCheckbox checked={agreed} onCheckedChange={(next) => setAgreed(next === true)} className="cursor-pointer" /> Watch this branch
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, ...TEXT_LABEL, opacity: 0.55 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, ...compactLabel, color: v("muted-foreground") }}>
             <BbCheckbox checked disabled /> Disabled
           </label>
         </div>
-      </SpecimenBlock>
-    </SpecimenGrid>
+      </div>
+    </div>
   );
 }
 
-/** The rail beside the mock: the interaction surfaces, compact. */
-function StageRail({ withOverlayHeading = true }: { withOverlayHeading?: boolean }) {
-  return withOverlayHeading ? (
-    <SpecimenBlock title={AREA_TITLES.overlays}>
-      <OverlaySpecimens vertical />
-    </SpecimenBlock>
-  ) : (
-    <div style={{ marginBottom: 18 }}><OverlaySpecimens vertical /></div>
+/** The rail beside the mock: two compact interaction areas, kept as siblings. */
+function StageRail() {
+  return (
+    <>
+      <section data-tp-area="overlays" aria-labelledby="tp-overlays-heading" style={{ minWidth: 0, paddingBottom: 14 }}>
+        <AreaHeading area="overlays" />
+        <div style={{ marginTop: 8 }}>
+          <OverlaySpecimens vertical />
+        </div>
+      </section>
+      <section data-tp-area="components" aria-labelledby="tp-components-heading" style={{ minWidth: 0, paddingTop: 14, borderTop: `1px solid ${v("border-seam", v("border"))}` }}>
+        <AreaHeading area="components" />
+        <div style={{ marginTop: 10 }}>
+          <ComponentsSection />
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -2170,17 +2194,17 @@ function PreviewPage({ subPath }: { subPath: string }) {
       </div>
 
       {(mobile
-        ? (["overlays", "stylesheet", "components"] as const)
-        : (["stylesheet", "components"] as const)
+        ? (["overlays", "components", "stylesheet"] as const)
+        : (["stylesheet"] as const)
       ).map((area) => (
-        <div key={area} data-tp-area={area} style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", scrollMarginTop: headerHeight + 12, padding: `${space(4)} ${contentInset}px ${space(1)}` }}>
-          <div style={{ minHeight: 18, marginBottom: 10, fontSize: 12.5, fontWeight: 650, letterSpacing: "-0.005em" }}>{AREA_TITLES[area]}</div>
-          {/* On the mobile band the rail's content becomes this section, so
-              the interaction surfaces are never lost — only restacked. */}
-          {area === "overlays" ? <StageRail withOverlayHeading={false} />
-            : area === "components" ? <ComponentsSection />
-            : <StyleSheetSection computed={computed} radii={radii} mode={mode} busy={editBusy} resetRevision={editResetRevision} onCommit={commitEdit} />}
-        </div>
+        <section key={area} data-tp-area={area} aria-labelledby={`tp-${area}-heading`} style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", scrollMarginTop: headerHeight + 12, padding: `${space(4)} ${contentInset}px ${space(1)}` }}>
+          <AreaHeading area={area} />
+          <div style={{ marginTop: area === "stylesheet" ? 12 : 10 }}>
+            {area === "overlays" ? <OverlaySpecimens vertical />
+              : area === "components" ? <ComponentsSection />
+              : <StyleSheetSection computed={computed} radii={radii} mode={mode} busy={editBusy} resetRevision={editResetRevision} onCommit={commitEdit} />}
+          </div>
+        </section>
       ))}
       <div style={{ height: space(8) }} />
     </div>

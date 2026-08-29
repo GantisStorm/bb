@@ -252,9 +252,9 @@ describe("Theme Preview", () => {
 
       await waitFor(() => expect(document.querySelector("[data-tp-band=mobile]")).not.toBeNull());
       expect(screen.queryByRole("button", { name: /full style guide/i })).toBeNull();
-      // Taxonomy order on mobile: mock, overlays, style sheet, components.
+      // The compact interaction areas stay together before the style sheet.
       const areas = [...document.querySelectorAll("[data-tp-area]")].map((el) => el.getAttribute("data-tp-area"));
-      expect(areas).toEqual(["mock", "overlays", "stylesheet", "components"]);
+      expect(areas).toEqual(["mock", "overlays", "components", "stylesheet"]);
       expect(screen.getByRole("button", { name: "Derived values" }).getAttribute("aria-expanded")).toBe("false");
       expect(document.querySelector("[data-tp-derived-values] [data-tp-derived-token]")).toBeNull();
     } finally {
@@ -507,6 +507,26 @@ describe("Theme Preview", () => {
     expect(await screen.findByRole("tooltip")).toBeDefined();
   });
 
+  it("keeps Components directly below Overlays as a sibling in the desktop rail", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
+    try {
+      renderPreview({
+        themeCatalog: () => DEFAULT_CATALOG,
+        setTheme: () => DEFAULT_CATALOG,
+      });
+      await waitFor(() => expect(document.querySelector("[data-tp-band=desktop]")).not.toBeNull());
+
+      const rail = document.querySelector("[data-tp-section=rail]");
+      const areas = [...(rail?.children ?? [])].filter((element) => element.hasAttribute("data-tp-area"));
+      expect(areas.map((area) => area.getAttribute("data-tp-area"))).toEqual(["overlays", "components"]);
+      expect(areas[0]?.nextElementSibling).toBe(areas[1]);
+      expect(areas[0]?.contains(areas[1] ?? null)).toBe(false);
+      expect(within(areas[1] as HTMLElement).getByRole("heading", { name: "Components", level: 2 })).toBeDefined();
+    } finally {
+      width.mockRestore();
+    }
+  });
+
   it("gives each split pane its own conversation", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
     try {
@@ -661,7 +681,7 @@ describe("Theme Preview", () => {
       await waitFor(() => expect(document.querySelector("[data-tp-band=desktop]")).not.toBeNull());
       expect(document.querySelector<HTMLElement>("[data-tp-header-inner]")?.style.maxWidth).toBe("1600px");
       expect(document.querySelector<HTMLElement>("[data-tp-layout=desktop]")?.style.maxWidth).toBe("1600px");
-      expect(document.querySelector<HTMLElement>("[data-tp-area=components]")?.style.maxWidth).toBe("1600px");
+      expect(document.querySelector<HTMLElement>("[data-tp-area=components]")?.closest("[data-tp-layout=desktop]")?.getAttribute("data-tp-layout")).toBe("desktop");
       expect(document.querySelector<HTMLElement>("[data-tp-area=stylesheet]")?.style.maxWidth).toBe("1600px");
     } finally {
       width.mockRestore();
