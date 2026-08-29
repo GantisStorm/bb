@@ -372,6 +372,39 @@ describe("Theme Preview", () => {
     });
   });
 
+  it("normalizes formatted CSS font stacks before a slider edit is persisted", async () => {
+    const root = document.documentElement.style;
+    const previous = root.getPropertyValue("--font-mono");
+    root.setProperty("--font-mono", 'ui-monospace, Menlo,\n  "Courier New", monospace');
+    const edits: Parameters<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>[0][] = [];
+    try {
+      renderPreview({
+        themeCatalog: () => DEFAULT_CATALOG,
+        setTheme: () => DEFAULT_CATALOG,
+        editTheme: (input) => {
+          edits.push(input);
+          return { catalog: DEFAULT_CATALOG, themeId: "default", forkedFrom: null };
+        },
+      });
+
+      const slider = await waitFor(() => {
+        const found = document.querySelector<HTMLElement>('[data-tp-specimen="type:text-scale"] [role="slider"]');
+        expect(found).not.toBeNull();
+        return found as HTMLElement;
+      });
+      fireEvent.keyDown(slider, { key: "ArrowRight", code: "ArrowRight" });
+
+      await waitFor(() => expect(edits).toHaveLength(1));
+      expect(edits[0]?.edit).toMatchObject({
+        kind: "typography",
+        fontMono: 'ui-monospace, Menlo, "Courier New", monospace',
+        textScale: 1.01,
+      });
+    } finally {
+      root.setProperty("--font-mono", previous);
+    }
+  });
+
   it("restores the computed value when an edit fails", async () => {
     renderPreview({
       themeCatalog: () => DEFAULT_CATALOG,

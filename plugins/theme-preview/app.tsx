@@ -851,6 +851,11 @@ function firstFamily(value: string | undefined): string {
   return value.split(",")[0]?.trim().replace(/^["']|["']$/g, "") ?? "";
 }
 
+/** CSS custom properties preserve author formatting; RPC font stacks do not. */
+function normalizeFontStack(value: string | undefined, fallback: string): string {
+  return value?.replace(/\s+/g, " ").trim() || fallback;
+}
+
 type ThemeEdit = ThemeEditInput["edit"];
 type ColorEdit = Extract<ThemeEdit, { kind: "colors" }>;
 type ColorFamily = ColorEdit["family"];
@@ -959,8 +964,8 @@ function valuesFromComputed(computed: Computed, resolvedRadii: Record<string, st
       prMerged: color("pr-merged", DEFAULT_EDITOR_VALUES.colors.prMerged),
     },
     typography: {
-      fontSans: computed["font-sans"]?.value || DEFAULT_SANS,
-      fontMono: computed["font-mono"]?.value || DEFAULT_MONO,
+      fontSans: normalizeFontStack(computed["font-sans"]?.value, DEFAULT_SANS),
+      fontMono: normalizeFontStack(computed["font-mono"]?.value, DEFAULT_MONO),
       textScale: clamp(textScale, 0.9, 1.1),
       lineHeight: clamp(lineHeight, 0.9, 1.15),
     },
