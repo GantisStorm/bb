@@ -5,34 +5,52 @@ import { cn } from "./cn";
 import { Icon, isIconName, type IconName } from "./Icon";
 import { Text } from "./Text";
 
+const IS_IOS = process.env.EXPO_OS === "ios";
+
+export const LIST_ROW_CHEVRON_SIZE = IS_IOS ? 14 : 18;
+export const LIST_ROW_ICON_SIZE = 20;
+
 export interface ListRowProps {
   title: string;
   subtitle?: string;
-  /** An icon name renders a 20px glyph; any node renders as-is. */
   leading?: IconName | ReactNode;
-  /** `"chevron"` renders the disclosure glyph; any node renders as-is. */
+  leadingTone?: "foreground" | "primary";
   trailing?: "chevron" | ReactNode;
   onPress?: () => void;
   onLongPress?: () => void;
   selected?: boolean;
   destructive?: boolean;
   disabled?: boolean;
-  /** Lines before the title truncates (default 1). */
   titleLines?: number;
   className?: string;
   accessibilityLabel?: string;
   testID?: string;
 }
 
-/**
- * Touch list row (min 44px): leading glyph, title/subtitle, trailing slot.
- * Pressed and selected states use the web `state-hover` / `surface-selected`
- * fills. Long-press is where context menus live on mobile.
- */
+export function SelectedCheck() {
+  const { tokens } = useTheme();
+  return (
+    <Icon name="Check" size={18} weight="semibold" color={tokens.primary} />
+  );
+}
+
+export function DisclosureChevron() {
+  const { tokens } = useTheme();
+  return (
+    <Icon
+      name="ChevronRight"
+      size={LIST_ROW_CHEVRON_SIZE}
+      weight="semibold"
+      color={tokens.subtleForeground}
+    />
+  );
+}
+
 export function ListRow({
   title,
   subtitle,
   leading,
+  leadingTone = "foreground",
   trailing,
   onPress,
   onLongPress,
@@ -47,47 +65,72 @@ export function ListRow({
   const { tokens } = useTheme();
   const interactive = Boolean(onPress || onLongPress);
   const titleColor = destructive ? tokens.destructiveText : tokens.foreground;
-  return (
-    <Pressable
-      accessibilityRole={interactive ? "button" : undefined}
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled, selected }}
-      disabled={disabled || !interactive}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      testID={testID}
-      className={cn(
-        "min-h-[44px] flex-row items-center gap-3 px-4 py-2",
-        interactive && "active:bg-state-hover",
-        selected && "bg-surface-selected",
-        disabled && "opacity-50",
-        className,
-      )}
-    >
+  const leadingColor = destructive
+    ? tokens.destructiveText
+    : leadingTone === "primary"
+      ? tokens.primary
+      : tokens.foreground;
+  const trailingNode =
+    trailing === "chevron" ? (
+      <DisclosureChevron />
+    ) : trailing === undefined || trailing === null ? (
+      selected ? (
+        <SelectedCheck />
+      ) : null
+    ) : (
+      trailing
+    );
+  const layoutClassName = cn(
+    "min-h-[44px] flex-row items-center gap-3 px-4 py-2",
+    disabled && "opacity-50",
+    className,
+  );
+  const content = (
+    <>
       {isIconName(leading) ? (
-        <Icon name={leading} size={20} color={titleColor} />
+        <Icon name={leading} size={LIST_ROW_ICON_SIZE} color={leadingColor} />
       ) : (
         leading
       )}
       <View className="min-w-0 flex-1">
         <Text
-          variant="body"
+          variant="bodyLarge"
           numberOfLines={titleLines}
           style={{ color: titleColor }}
         >
           {title}
         </Text>
         {subtitle ? (
-          <Text variant="caption" numberOfLines={2}>
+          <Text variant="body" tone="muted" numberOfLines={2}>
             {subtitle}
           </Text>
         ) : null}
       </View>
-      {trailing === "chevron" ? (
-        <Icon name="ChevronRight" size={18} color={tokens.subtleForeground} />
-      ) : (
-        trailing
+      {trailingNode}
+    </>
+  );
+  if (!interactive) {
+    return (
+      <View className={layoutClassName} testID={testID}>
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled, selected }}
+      disabled={disabled}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      testID={testID}
+      className={cn(
+        layoutClassName,
+        IS_IOS ? "active:bg-state-active" : "active:bg-state-hover",
       )}
+    >
+      {content}
     </Pressable>
   );
 }

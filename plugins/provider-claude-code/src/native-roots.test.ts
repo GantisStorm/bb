@@ -1,15 +1,15 @@
-/**
- * The plugin's own half of the answer: the config directory's `skills` and
- * `commands` (wherever `CLAUDE_CONFIG_DIR` put them) in front of the plugin
- * roots the SDK's registry reader answers, and the contract filter over the
- * whole. The registry reader's own cases live with the SDK.
- */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExperimentalVendorPluginRoots } from "@get-bb/plugin-sdk/host";
+import type {
+  ExperimentalClaudePluginRoots,
+  ExperimentalVendorPluginRoots,
+} from "@get-bb/plugin-sdk/host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveClaudeNativeRoots } from "./native-roots.js";
+import {
+  filterClaudeNativeRoots,
+  resolveClaudeNativeRoots,
+} from "./native-roots.js";
 
 interface Fixture {
   cwd: string;
@@ -110,7 +110,6 @@ describe("resolveClaudeNativeRoots", () => {
     });
     await writePlugin(pluginRoot, { name: "moved-plugin" });
     await mkdir(path.join(pluginRoot, "skills"), { recursive: true });
-    // A registry left behind in ~/.claude is not the one in use.
     await writeJson(
       path.join(fixture.claudeDir, "plugins", "installed_plugins.json"),
       {
@@ -150,10 +149,6 @@ describe("resolveClaudeNativeRoots", () => {
 
   it("keeps the user root, unprefixed, when a plugin installed at the config directory claims its path", async () => {
     const fixture = await makeFixture();
-    // A dev install recorded at the config directory itself: its `skills/`
-    // and `commands/` are the user directories, and the reader would answer
-    // them once more, prefixed. The user root came first and keeps each
-    // path; the plugin's own root `SKILL.md` still answers.
     await writeJson(
       path.join(fixture.claudeDir, "plugins", "installed_plugins.json"),
       {
@@ -222,7 +217,6 @@ describe("resolveClaudeNativeRoots contract filtering", () => {
     const spaced = path.join(cacheRoot, "spaced", "1");
     const scoped = path.join(cacheRoot, "scoped", "1");
     const long = path.join(cacheRoot, "long", "1");
-    // No manifest name, no marketplace id: the directory name is the name.
     const hidden = path.join(fixture.homeDir, ".hidden");
     await writeJson(
       path.join(fixture.claudeDir, "plugins", "installed_plugins.json"),
@@ -274,44 +268,32 @@ describe("resolveClaudeNativeRoots contract filtering", () => {
     }
   });
 
-  it("keeps the first 256 command roots of 260 plugins and warns once", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const fixture = await makeFixture();
-    const cacheRoot = path.join(
-      fixture.claudeDir,
-      "plugins",
-      "cache",
-      "market",
+  it("keeps the first 256 command roots of 260 plugins and warns once", () => {
+    const warn = vi.fn();
+    const claudeDir = path.join(
+      path.parse(process.cwd()).root,
+      "claude-config",
     );
-    // Just past the cap: enough plugins to drop some, few enough that the
-    // fixture (two writes per plugin, issued together) stays well inside the
-    // default test timeout on a slow CI runner.
-    const plugins: Record<string, { scope: string; installPath: string }[]> =
-      {};
-    const writes: Promise<void>[] = [];
-    for (let index = 0; index < 260; index += 1) {
-      const name = `plugin-${String(index).padStart(3, "0")}`;
-      const root = path.join(cacheRoot, name, "1");
-      plugins[`${name}@market`] = [{ scope: "user", installPath: root }];
-      writes.push(
-        writePlugin(root, { name }).then(() =>
-          mkdir(path.join(root, "commands"), { recursive: true }).then(
-            () => undefined,
-          ),
-        ),
-      );
-    }
-    await Promise.all(writes);
-    await writeJson(
-      path.join(fixture.claudeDir, "plugins", "installed_plugins.json"),
-      { version: 2, plugins },
-    );
+    const cacheRoot = path.join(claudeDir, "plugins", "cache", "market");
+    const pluginCommands: ExperimentalClaudePluginRoots["commands"] =
+      Array.from({ length: 260 }, (_, index) => {
+        const name = `plugin-${String(index).padStart(3, "0")}`;
+        return {
+          path: path.join(cacheRoot, name, "1", "commands"),
+          origin: "user",
+          namePrefix: `${name}:`,
+          shape: "commands",
+        };
+      });
 
-    const roots = await resolve(fixture, null);
+    const roots = filterClaudeNativeRoots(
+      { claudeDir, skills: [], commands: pluginCommands },
+      warn,
+    );
 
     expect(roots.commands).toHaveLength(256);
     expect(commandPaths(roots).slice(0, 2)).toEqual([
-      path.join(fixture.claudeDir, "commands"),
+      path.join(claudeDir, "commands"),
       path.join(cacheRoot, "plugin-000", "1", "commands"),
     ]);
     expect(roots.commands[255]?.namePrefix).toBe("plugin-254:");
