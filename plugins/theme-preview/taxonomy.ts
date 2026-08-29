@@ -7,27 +7,28 @@
  *
  * 1. `mock`       — the mock bb app surface, with toggles between views.
  *                   Judges tokens in real product composition.
- * 2. `stylesheet` — the compact live theme editor. Direct values are real bb
+ * 2. `overlays`   — components whose theming only shows under interaction
+ *                   (menus, dialogs, popovers, tooltips, hover cards, toasts).
+ * 3. `components` — live component specimens for hover, focus, pressed,
+ *                   checked, editable, and disabled states. This stays a
+ *                   compact sibling directly below overlays.
+ * 4. `stylesheet` — the compact live theme editor. Direct values are real bb
  *                   controls (`data-tp-specimen`); the larger token families
  *                   they produce stay inspectable in a collapsed, read-only
  *                   derived-values section.
- * 3. `components` — live component specimens for hover, focus, pressed,
- *                   checked, editable, and disabled states.
- * 4. `overlays`   — components whose theming only shows under interaction
- *                   (menus, dialogs, popovers, tooltips, hover cards, toasts).
  *
  * The app renders sections from this manifest and the coverage test asserts
  * every inventoried specimen actually reaches the DOM, so adding a specimen
  * is: add it here, render it via the shared layout primitives, done.
  */
 
-export type AreaId = "mock" | "stylesheet" | "components" | "overlays";
+export type AreaId = "mock" | "overlays" | "components" | "stylesheet";
 
 export const AREA_TITLES: Record<AreaId, string> = {
   mock: "Preview",
-  stylesheet: "Style sheet",
-  components: "Components",
   overlays: "Overlays",
+  components: "Components",
+  stylesheet: "Style sheet",
 };
 
 // ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ export const MOCK_VIEWS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 2 — Style sheet. Direct controls plus read-only derived families.
+// Area 4 — Style sheet. Direct controls plus read-only derived families.
 // `data-tp-specimen` values are `<kind>:<id>` from these tables.
 // ---------------------------------------------------------------------------
 
@@ -125,7 +126,7 @@ export const COMPONENT_SPECIMENS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 4 — Interactive overlays (all vendored; opened deliberately, one at a
+// Area 2 — Interactive overlays (all vendored; opened deliberately, one at a
 // time). The theme picker in the header additionally exercises
 // @bb/shared-ui/select live.
 // ---------------------------------------------------------------------------
