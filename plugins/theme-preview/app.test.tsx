@@ -394,9 +394,11 @@ describe("Theme Preview", () => {
       const slider = await waitFor(() => {
         const found = document.querySelector<HTMLElement>('[data-tp-specimen="type:text-scale"] [role="slider"]');
         expect(found).not.toBeNull();
-        expect(found?.getAttribute("aria-disabled")).not.toBe("true");
+        expect(found?.hasAttribute("data-disabled")).toBe(false);
+        expect(found?.getAttribute("aria-valuenow")).toBe("1");
         return found as HTMLElement;
       });
+      slider.focus();
       fireEvent.keyDown(slider, { key: "ArrowRight", code: "ArrowRight" });
       fireEvent.keyUp(slider, { key: "ArrowRight", code: "ArrowRight" });
 
