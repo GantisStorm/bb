@@ -209,7 +209,7 @@ describe("Theme Preview", () => {
       expect(within(toc).getByRole("tab", { name: "You" }).getAttribute("aria-selected")).toBe("true");
       expect(within(toc).getByRole("button", { name: /Make the blacklight variant/i }).getAttribute("aria-current")).toBe("true");
 
-      fireEvent.click(within(toc).getByRole("tab", { name: "Agent" }));
+      fireEvent.mouseDown(within(toc).getByRole("tab", { name: "Agent" }));
       const second = await within(toc).findByRole("button", { name: /Selection now reads/i });
       fireEvent.click(second);
       expect(second.getAttribute("aria-current")).toBe("true");
@@ -312,6 +312,7 @@ describe("Theme Preview", () => {
       const input = await waitFor(() => {
         const found = screen.getByLabelText("Shadow color") as HTMLInputElement;
         expect(found.disabled).toBe(false);
+        expect(found.value).toBe("#222222");
         return found;
       });
       expect(input.value).toBe("#222222");
@@ -336,6 +337,8 @@ describe("Theme Preview", () => {
       const input = screen.getByLabelText("Canvas color") as HTMLInputElement;
       expect(input.disabled).toBe(false);
       expect(input.value).toBe("#ffffff");
+      expect((screen.getByLabelText("Ink color") as HTMLInputElement).value).toBe("#222222");
+      expect((screen.getByLabelText("Sidebar color") as HTMLInputElement).value).toBe("#f5f5f5");
       return input;
     });
 
@@ -391,6 +394,7 @@ describe("Theme Preview", () => {
       const slider = await waitFor(() => {
         const found = document.querySelector<HTMLElement>('[data-tp-specimen="type:text-scale"] [role="slider"]');
         expect(found).not.toBeNull();
+        expect(found?.getAttribute("aria-disabled")).not.toBe("true");
         return found as HTMLElement;
       });
       fireEvent.keyDown(slider, { key: "ArrowRight", code: "ArrowRight" });

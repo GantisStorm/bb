@@ -1573,7 +1573,7 @@ function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommi
   const ready = Boolean(computed.canvas?.value && computed.ink?.value);
   const radiiRef = useRef(radii);
   radiiRef.current = radii;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (ready) setValues(valuesFromComputed(computed, radiiRef.current));
     // Resolved radius specimens update on their own timer. Their identity is
     // not an editor-value revision and must not overwrite an optimistic edit.
