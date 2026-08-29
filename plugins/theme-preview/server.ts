@@ -3,6 +3,13 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { BUILTIN_THEME_CSS } from "./builtin-theme-sources";
+import {
+  createThemeEditor,
+  editThemeInputSchema,
+  readThemePreviewForkName,
+  type EditableThemeResource,
+} from "./theme-editor";
 
 const swatchSchema = z
   .object({
@@ -21,6 +28,7 @@ const themeSchema = z
   .object({
     id: z.string(),
     name: z.string(),
+    source: z.enum(["builtin", "custom", "plugin"]),
     light: swatchSchema.nullable(),
     dark: swatchSchema.nullable(),
   })
@@ -38,6 +46,16 @@ const catalogSchema = z
 export const rpcContract = defineRpcContract({
   themeCatalog: { input: z.object({}).strict(), output: catalogSchema },
   setTheme: { input: z.object({ themeId: z.string().min(1) }).strict(), output: catalogSchema },
+  editTheme: {
+    input: editThemeInputSchema,
+    output: z
+      .object({
+        catalog: catalogSchema,
+        themeId: z.string().min(1),
+        forkedFrom: z.string().nullable(),
+      })
+      .strict(),
+  },
 });
 
 export type ThemeSwatch = z.infer<typeof swatchSchema>;
@@ -71,7 +89,7 @@ export function classifySelector(selector: string): "shared" | "light" | "dark" 
   for (const part of parts) {
     if (/\s/.test(part.replace(/:not\([^)]*\)/g, ""))) return null; // descendant selector
     if (part === ":root") sawShared = true;
-    else if (part === ".light" || part === ":root:not(.dark)" || part === "html:not(.dark)") sawLight = true;
+    else if (part === ".light" || part === ".light:not(.dark)" || part === ":root:not(.dark)" || part === "html:not(.dark)") sawLight = true;
     else if (part === ".dark" || part === ":root.dark" || part === "html.dark") sawDark = true;
     else return null;
   }
@@ -317,29 +335,34 @@ export async function buildCatalog(
   const active = c.active as Record<string, unknown> | undefined;
   const activeThemeId = typeof active?.themeId === "string" ? active.themeId : null;
 
-  const entries: Array<{ id: string; name: string }> = [];
+  const entries: Array<{ id: string; name: string; source: "builtin" | "custom" | "plugin" }> = [];
   for (const id of Array.isArray(c.custom) ? c.custom : []) {
-    if (typeof id === "string") entries.push({ id, name: id });
+    if (typeof id === "string") entries.push({ id, name: id, source: "custom" });
   }
   for (const plugin of Array.isArray(c.plugins) ? c.plugins : []) {
     const entry = plugin as Record<string, unknown>;
     if (typeof entry.id === "string") {
-      entries.push({ id: entry.id, name: typeof entry.name === "string" ? entry.name : entry.id });
+      entries.push({ id: entry.id, name: typeof entry.name === "string" ? entry.name : entry.id, source: "plugin" });
     }
   }
   for (const builtin of BUILTIN_THEMES) {
-    if (!entries.some((entry) => entry.id === builtin.id)) entries.push(builtin);
+    if (!entries.some((entry) => entry.id === builtin.id)) entries.push({ ...builtin, source: "builtin" });
   }
   // Anything active but unknown (a newer builtin, say) still has to be listed.
   if (activeThemeId && !entries.some((entry) => entry.id === activeThemeId)) {
-    entries.unshift({ id: activeThemeId, name: activeThemeId });
+    entries.unshift({
+      id: activeThemeId,
+      name: activeThemeId,
+      source: activeThemeId.startsWith("plugin:") ? "plugin" : "builtin",
+    });
   }
 
   const themes = await Promise.all(
     entries.map(async (entry) => {
       const css = await readCss(entry.id);
       const swatches = css ? parseThemeSwatches(css) : (BUILTIN_SWATCHES[entry.id] ?? { light: null, dark: null });
-      return { ...entry, light: swatches.light, dark: swatches.dark };
+      const name = entry.source === "custom" && css ? (readThemePreviewForkName(css) ?? entry.name) : entry.name;
+      return { ...entry, name, light: swatches.light, dark: swatches.dark };
     }),
   );
   return { activeThemeId, themes, revision: 0 };
@@ -408,6 +431,68 @@ async function activeThemePath(
     }
   }
   return null;
+}
+
+/** Resolve one catalog entry to the independent CSS resource an edit starts from. */
+export async function resolveEditableTheme(bb: BbPluginApi, themeId: string): Promise<EditableThemeResource> {
+  const raw = (await bb.sdk.theme.catalog()) as {
+    custom?: unknown;
+    dir?: unknown;
+    plugins?: unknown;
+  };
+  const themeDirectory = typeof raw.dir === "string" ? raw.dir : null;
+  if (!themeDirectory) throw new Error("Theme Preview cannot edit themes because the custom-theme directory is unavailable");
+
+  const customIds = Array.isArray(raw.custom)
+    ? raw.custom.filter((id): id is string => typeof id === "string")
+    : [];
+  if (customIds.includes(themeId)) {
+    for (const filePath of [resolve(themeDirectory, themeId, "theme.css"), resolve(themeDirectory, `${themeId}.css`)]) {
+      try {
+        const css = await readFile(filePath, "utf8");
+        return { id: themeId, name: readThemePreviewForkName(css) ?? themeId, source: "custom", css, filePath, themeDirectory };
+      } catch {
+        // Catalog discovery can race a file move. Try the other supported layout.
+      }
+    }
+    throw new Error(`Custom theme '${themeId}' no longer has a readable theme.css`);
+  }
+
+  if (themeId.startsWith("plugin:")) {
+    const pluginEntries = Array.isArray(raw.plugins) ? raw.plugins : [];
+    const metadata = pluginEntries
+      .map((entry) => entry as Record<string, unknown>)
+      .find((entry) => entry.id === themeId);
+    if (!metadata) throw new Error(`Plugin theme '${themeId}' is not in the current theme catalog`);
+
+    const rootDirs = new Map<string, string>();
+    const listed = (await bb.sdk.plugins.list()) as { plugins?: Array<{ id?: string; rootDir?: string }> };
+    for (const entry of listed.plugins ?? []) {
+      if (typeof entry.id === "string" && typeof entry.rootDir === "string") rootDirs.set(entry.id, entry.rootDir);
+    }
+    const css = await readPluginThemeCss(bb, themeId, rootDirs);
+    if (css === null) throw new Error(`Plugin theme '${themeId}' has no readable source CSS`);
+    return {
+      id: themeId,
+      name: typeof metadata.name === "string" ? metadata.name : themeId,
+      source: "plugin",
+      css,
+      filePath: null,
+      themeDirectory,
+    };
+  }
+
+  const builtinCss = BUILTIN_THEME_CSS[themeId];
+  const builtin = BUILTIN_THEMES.find((entry) => entry.id === themeId);
+  if (builtinCss === undefined || !builtin) throw new Error(`Theme '${themeId}' is not editable`);
+  return {
+    id: themeId,
+    name: builtin.name,
+    source: "builtin",
+    css: builtinCss,
+    filePath: null,
+    themeDirectory,
+  };
 }
 
 /**
@@ -537,27 +622,39 @@ export function createCatalogLoader(bb: BbPluginApi) {
     return promise;
   };
 
+  const setTheme = async (themeId: string, refreshCatalog: boolean) => {
+    selectionGeneration += 1;
+    const generation = selectionGeneration;
+    // Theme application is global and not cancellable. Preserve click order
+    // so a slower earlier apply cannot land after the user's newer choice.
+    const apply = selectionQueue.then(async () => {
+      await warnIfSlow(`theme apply (${themeId})`, () => bb.sdk.theme.set(themeId));
+    });
+    selectionQueue = apply.catch(() => undefined);
+    await apply;
+
+    if (refreshCatalog) return catalog();
+
+    // The picker already has the enriched catalog it selected from. Confirm
+    // the global mutation from that snapshot so a slow CSS/plugin scan cannot
+    // make a successful selection look stuck. The next watcher signal or poll
+    // refreshes enrichment independently.
+    const base = latestCatalog ?? await catalog();
+    const selected = { ...base, activeThemeId: themeId };
+    if (selectionGeneration === generation) latestCatalog = selected;
+    return selected;
+  };
+
   return {
     catalog,
-    async setTheme(themeId: string) {
-      selectionGeneration += 1;
-      const generation = selectionGeneration;
-      // Theme application is global and not cancellable. Preserve click order
-      // so a slower earlier apply cannot land after the user's newer choice.
-      const apply = selectionQueue.then(async () => {
-        await warnIfSlow(`theme apply (${themeId})`, () => bb.sdk.theme.set(themeId));
-      });
-      selectionQueue = apply.catch(() => undefined);
-      await apply;
-
-      // The picker already has the enriched catalog it selected from. Confirm
-      // the global mutation from that snapshot so a slow CSS/plugin scan cannot
-      // make a successful selection look stuck. The next watcher signal or poll
-      // refreshes enrichment independently.
-      const base = latestCatalog ?? await catalog();
-      const selected = { ...base, activeThemeId: themeId };
-      if (selectionGeneration === generation) latestCatalog = selected;
-      return selected;
+    setTheme(themeId: string) {
+      return setTheme(themeId, false);
+    },
+    applyEditedTheme(themeId: string) {
+      // Editing can introduce a newly forked catalog entry and always changes
+      // swatches, so return a fresh enrichment rather than the picker's prior
+      // snapshot.
+      return setTheme(themeId, true);
     },
   };
 }
@@ -572,6 +669,10 @@ export default async function plugin(bb: BbPluginApi) {
   // CSS and push it to every client.
   const catalogLoader = createCatalogLoader(bb);
   const catalog = catalogLoader.catalog;
+  const themeEditor = createThemeEditor({
+    resolveTheme: (themeId) => resolveEditableTheme(bb, themeId),
+    applyTheme: (themeId) => catalogLoader.applyEditedTheme(themeId),
+  });
 
   // Instant path. Watch the custom-theme directory (new themes, edits) and push
   // a signal to every open panel; the panel refetches on the signal, so a new
@@ -625,6 +726,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async setTheme({ themeId }) {
       return catalogLoader.setTheme(themeId);
+    },
+    async editTheme(input) {
+      return themeEditor.editTheme(input);
     },
   });
 

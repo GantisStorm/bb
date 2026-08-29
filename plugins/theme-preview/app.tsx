@@ -3,6 +3,11 @@ import { Badge as BbBadge } from "@bb/shared-ui/badge";
 import { Button as BbButton } from "@bb/shared-ui/button";
 import { Checkbox as BbCheckbox } from "@bb/shared-ui/checkbox";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@bb/shared-ui/collapsible";
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -39,8 +44,9 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@bb/shared-ui/select";
+import { Slider } from "@bb/shared-ui/slider";
 import { Switch as BbSwitch } from "@bb/shared-ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@bb/shared-ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@bb/shared-ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -50,7 +56,6 @@ import {
 import { cn } from "@bb/shared-ui/lib/utils";
 import { toast } from "sonner";
 import {
-  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -60,6 +65,7 @@ import {
   type ReactNode,
 } from "react";
 import type { rpcContract } from "./server";
+import type { ThemeEditInput } from "./theme-editor";
 import {
   contentInsetForWidth,
   frameCompositionForWidth,
@@ -75,9 +81,9 @@ import { LatestRequest, contrastRatio } from "./theme-utils";
 import {
   AREA_TITLES,
   COLOR_GROUPS,
+  DIRECT_COLOR_CONTROLS,
   MOCK_VIEWS,
   RADIUS_SPECIMENS,
-  TYPE_SPECIMENS,
 } from "./taxonomy";
 
 // ---------------------------------------------------------------------------
@@ -218,7 +224,7 @@ function rowStyle(state: RowState): CSSProperties {
 // working status (SIDEBAR_UNREAD_DOT_CLASS / SIDEBAR_SUCCESS_STATUS_DOT_CLASS).
 function Row({ label, state = "rest", dot }: { label: string; state?: RowState; dot?: "unread" | "status" }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, height: 28, padding: "0 10px", borderRadius: R_ROW, fontSize: 13, color: v("sidebar-foreground"), ...rowStyle(state) }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, height: v("bb-sidebar-row-height", "28px"), padding: "0 10px", borderRadius: R_ROW, fontSize: 13, color: v("sidebar-foreground"), ...rowStyle(state) }}>
       <span style={{ flex: 1, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{label}</span>
       {dot === "unread" ? <Dot color={v("foreground")} size={5} /> : dot === "status" ? <Dot color={`color-mix(in srgb, ${v("muted-foreground")} 60%, transparent)`} size={5} /> : null}
     </div>
@@ -324,7 +330,65 @@ function VerificationCard() {
   );
 }
 
-function Thread({ title = "Endless theme family — blacklight pass", active = true, narrow = false, brief = false, empty = false, marker = false, story = "blacklight" }: { title?: string; active?: boolean; narrow?: boolean; brief?: boolean; empty?: boolean; marker?: boolean; story?: "blacklight" | "specimen" }) {
+const TOC_MESSAGES = {
+  agent: [
+    "Three blacks were fragmenting the frame.",
+    "Selection now reads rgba(47,180,255,.20).",
+    "Tightened the raised surfaces and kept the seams neutral.",
+  ],
+  you: [
+    "Make the blacklight variant feel like the reference.",
+    "Match the selection blue to the glove.",
+    "Keep the hierarchy calm.",
+  ],
+} as const;
+
+/** A compact projection of bb's real thread ToC popover, held open so every
+ * theme can be judged against the same transient surface. */
+function ThreadTocFixture() {
+  const [tab, setTab] = useState<keyof typeof TOC_MESSAGES>("you");
+  const [active, setActive] = useState(0);
+  const messages = TOC_MESSAGES[tab];
+  return (
+    <aside
+      data-tp-thread-toc=""
+      aria-label="Thread table of contents"
+      style={{ position: "absolute", zIndex: 6, top: 54, right: 9, width: "min(250px, calc(100% - 34px))", display: "flex", alignItems: "flex-start", pointerEvents: "auto" }}
+    >
+      <div style={{ minWidth: 0, flex: 1, borderRadius: RADIUS_LG, border: `1px solid ${v("border")}`, background: v("popover"), boxShadow: v("shadow-lg"), padding: 4 }}>
+        <Tabs value={tab} onValueChange={(next) => {
+          if (next !== "agent" && next !== "you") return;
+          setTab(next);
+          setActive(0);
+        }}>
+          <TabsList aria-label="Table of contents messages" className="h-7 w-full justify-start p-0.5">
+            <TabsTrigger value="agent" className="h-6 flex-1 cursor-pointer px-2 text-xs">Agent</TabsTrigger>
+            <TabsTrigger value="you" className="h-6 flex-1 cursor-pointer px-2 text-xs">You</TabsTrigger>
+          </TabsList>
+          <TabsContent value={tab} style={{ display: "flex", flexDirection: "column", gap: 1, marginTop: 3 }}>
+            {messages.map((message, index) => (
+              <BbButton
+                key={message}
+                variant="ghost"
+                size="sm"
+                aria-current={active === index ? "true" : undefined}
+                className={cn("h-auto min-h-7 w-full cursor-pointer justify-start whitespace-normal px-2 py-1 text-left text-xs font-normal leading-snug", active === index && "bg-state-hover text-foreground")}
+                onClick={() => setActive(index)}
+              >
+                <span style={{ display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden" }}>{message}</span>
+              </BbButton>
+            ))}
+          </TabsContent>
+        </Tabs>
+      </div>
+      <div aria-hidden style={{ width: 22, padding: "8px 0 0 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 7 }}>
+        {messages.map((_, index) => <span key={index} style={{ width: active === index ? 14 : 8, height: 3, borderRadius: 999, background: active === index ? `color-mix(in oklab, ${v("foreground")} 70%, transparent)` : `color-mix(in oklab, ${v("foreground")} 20%, transparent)` }} />)}
+      </div>
+    </aside>
+  );
+}
+
+function Thread({ title = "Endless theme family — blacklight pass", active = true, narrow = false, brief = false, empty = false, marker = false, showToc = false, story = "blacklight" }: { title?: string; active?: boolean; narrow?: boolean; brief?: boolean; empty?: boolean; marker?: boolean; showToc?: boolean; story?: "blacklight" | "specimen" }) {
   const pad = narrow ? 20 : 30;
   const canvasColor = v("canvas", v("background"));
   return (
@@ -347,6 +411,7 @@ function Thread({ title = "Endless theme family — blacklight pass", active = t
             <Badge tone="success"><Dot color={v("success")} size={6} /> Running</Badge>
             {narrow ? null : <Badge tone="outline">bb/endless-theme-plugin</Badge>}
           </div>
+          {showToc ? <ThreadTocFixture /> : null}
           {/* Anchored at the bottom like a scrolled thread: messages keep their
               natural size and the oldest clip off the top, never squash. The
               scrim makes the cut read as scrolled-away rather than broken. */}
@@ -504,7 +569,7 @@ function FrameView({ view, composition, themeName, mode }: { view: View; composi
       return (
         <>
           {sidebar ? <Sidebar selected /> : null}
-          <Thread narrow={narrow} />
+          <Thread narrow={narrow} showToc />
           {infoPanel ? <InfoPanel /> : null}
         </>
       );
@@ -566,9 +631,9 @@ function Frame({ view, themeName, mode }: { view: View; themeName: string; mode:
 }
 
 // ---------------------------------------------------------------------------
-// Area 2 — Style sheet. The specimen inventory lives in taxonomy.ts; this
-// section renders it as dense tables of discrete, targetable specimens
-// (`data-tp-specimen`) so a later version can wire each one to an editor.
+// Area 2 — Style sheet. The specimen inventory lives in taxonomy.ts. Direct
+// values are compact shared controls; the larger generated families remain
+// available for inspection in a collapsed read-only disclosure.
 // ---------------------------------------------------------------------------
 
 /**
@@ -578,10 +643,9 @@ function Frame({ view, themeName, mode }: { view: View; themeName: string; mode:
  */
 type ContrastSpec = { fgToken: string; fgFallbackToken?: string; washToken: string; washAlpha: number };
 const STATUS_CONTRAST: Record<string, ContrastSpec> = {
-  success: { fgToken: "success", washToken: "success", washAlpha: 0.15 },
-  warning: { fgToken: "warning-text", fgFallbackToken: "warning", washToken: "warning", washAlpha: 0.15 },
-  destructive: { fgToken: "destructive-text", fgFallbackToken: "destructive", washToken: "destructive", washAlpha: 0.15 },
-  "pr-merged": { fgToken: "pr-merged", washToken: "pr-merged", washAlpha: 0.15 },
+  "success-foreground": { fgToken: "success-foreground", fgFallbackToken: "success", washToken: "success", washAlpha: 0.15 },
+  "warning-text": { fgToken: "warning-text", fgFallbackToken: "warning", washToken: "warning", washAlpha: 0.15 },
+  "destructive-text": { fgToken: "destructive-text", fgFallbackToken: "destructive", washToken: "destructive", washAlpha: 0.15 },
   "diff-added": { fgToken: "foreground", washToken: "diff-added", washAlpha: 0.18 },
   "diff-removed": { fgToken: "foreground", washToken: "diff-removed", washAlpha: 0.18 },
 };
@@ -594,12 +658,17 @@ function colorGroupRowProps(policy: string, token: string): { contrastAgainst?: 
   return {};
 }
 
-const SURFACE_TOKENS = COLOR_GROUPS.find((group) => group.id === "surfaces")!.tokens;
-// warning-text/destructive-text are measured for the painted-pair ratios but
-// not listed as rows of their own; the fonts are measured for the type sheet.
+// Direct editor values, derived inspection values, and the private metadata
+// written by the editor-managed typography/shadow families.
 const ALL_TOKENS = [
+  ...DIRECT_COLOR_CONTROLS.map((control) => control.token),
   ...COLOR_GROUPS.flatMap((group) => group.tokens),
-  "warning-text", "destructive-text", "font-sans", "font-mono",
+  "font-sans", "font-mono", "text-2xs", "text-2xs--line-height",
+  "text-xs", "text-xs--line-height", "text-sm", "text-sm--line-height",
+  "text-base", "text-base--line-height", "tp-text-scale", "tp-line-height",
+  "spacing", "tracking-normal", "bb-sidebar-row-height", "icon-stroke-width",
+  "radius", "shadow-x", "shadow-y", "shadow-blur", "shadow-spread",
+  "shadow-color", "shadow-opacity", "tp-shadow-color", "tp-shadow-opacity-percent",
 ];
 
 /** "rgb(r, g, b)" / "rgba(r, g, b, a)" → the same colour at the given alpha. */
@@ -705,7 +774,7 @@ function useResolvedRadii(revision: string): Record<string, string> {
   return out;
 }
 
-function TokenRow({ name, computed, contrastAgainst, contrastSpec, targetable = false }: { name: string; computed: Computed; contrastAgainst?: string; contrastSpec?: ContrastSpec; targetable?: boolean }) {
+function TokenRow({ name, computed, contrastAgainst, contrastSpec }: { name: string; computed: Computed; contrastAgainst?: string; contrastSpec?: ContrastSpec }) {
   const c = computed[name];
   // Ink rows carry their WCAG ratio against the surface they sit on; status
   // rows measure the pair the product paints (text token on the 15%/18% wash
@@ -722,10 +791,7 @@ function TokenRow({ name, computed, contrastAgainst, contrastSpec, targetable = 
   }
   const hasRatioColumn = contrastAgainst !== undefined || contrastSpec !== undefined;
   return (
-    // The row is the future edit target: one element per token, addressable
-    // as `[data-tp-specimen="color:<token>"]` (style-sheet rows only — the
-    // at-a-glance rail duplicates are not targets).
-    <div data-tp-specimen={targetable ? `color:${name}` : undefined} style={{ display: "grid", gridTemplateColumns: hasRatioColumn ? "24px minmax(0, 1fr) 72px 46px" : "24px minmax(0, 1fr) 72px", alignItems: "center", columnGap: 6, height: 22 }}>
+    <div data-tp-derived-token={name} style={{ display: "grid", gridTemplateColumns: hasRatioColumn ? "24px minmax(0, 1fr) 72px 46px" : "24px minmax(0, 1fr) 72px", alignItems: "center", columnGap: 6, height: 22 }}>
       <span
         title={c?.sidebar ? `${c.value}\nsidebar override: ${c.sidebar}` : c?.value}
         style={{
@@ -756,7 +822,6 @@ function TokenRow({ name, computed, contrastAgainst, contrastSpec, targetable = 
 // the same five roles: section > category > control label > value > support.
 // ---------------------------------------------------------------------------
 
-const TEXT_SECTION: CSSProperties = { fontSize: 15, fontWeight: 650, letterSpacing: "-0.01em", color: v("foreground") };
 const TEXT_CATEGORY: CSSProperties = { fontSize: 10.5, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: v("muted-foreground") };
 const TEXT_LABEL: CSSProperties = { fontSize: 12.5, fontWeight: 500, color: v("foreground") };
 const TEXT_VALUE: CSSProperties = { fontFamily: MONO, fontSize: 11.5, fontVariantNumeric: "tabular-nums", color: v("muted-foreground") };
@@ -780,213 +845,340 @@ function SpecimenBlock({ id, title, wide = false, children }: { id?: string; tit
   );
 }
 
-// ---------------------------------------------------------------------------
-// Inspector fields — the shape design tools use for a property: a label on the
-// left, a bordered well holding the value on the right. Read-only in this
-// version, so they carry no interactive affordance they cannot honour; the
-// well is the element a later version turns into a picker.
-// ---------------------------------------------------------------------------
-
-function FieldRow({ specimen, label, children }: { specimen?: string; label: string; children: ReactNode }) {
-  return (
-    <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 150px)", alignItems: "center", columnGap: 12, minHeight: 32 }}>
-      <span data-tp-role="label" style={{ ...TEXT_LABEL, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{label}</span>
-      {children}
-    </div>
-  );
-}
-
-/** The bordered value well: bb's input geometry at inspector density. */
-function FieldWell({ children, title }: { children: ReactNode; title?: string }) {
-  return (
-    <span
-      title={title}
-      className="border-input bg-transparent"
-      style={{ display: "flex", alignItems: "center", gap: 6, height: 28, padding: "0 9px", borderRadius: RADIUS_MD, borderWidth: 1, borderStyle: "solid", minWidth: 0 }}
-    >
-      {children}
-    </span>
-  );
-}
-
 /** First family of a CSS font list, unquoted — what the sheet reports. */
 function firstFamily(value: string | undefined): string {
   if (!value) return "";
   return value.split(",")[0]?.trim().replace(/^["']|["']$/g, "") ?? "";
 }
 
-// ---------------------------------------------------------------------------
-// Typography: editable controls (the font fields) are visually separate from
-// the preview card, which applies every type role to one coherent sample.
-// ---------------------------------------------------------------------------
+type ThemeEdit = ThemeEditInput["edit"];
+type ColorEdit = Extract<ThemeEdit, { kind: "colors" }>;
+type ColorFamily = ColorEdit["family"];
+type DirectColors = Omit<ColorEdit, "kind" | "family">;
+type TypographyValues = Omit<Extract<ThemeEdit, { kind: "typography" }>, "kind">;
+type RhythmValues = Omit<Extract<ThemeEdit, { kind: "rhythm" }>, "kind">;
+type ShadowValues = Omit<Extract<ThemeEdit, { kind: "shadow" }>, "kind">;
+type EditorValues = {
+  colors: DirectColors;
+  typography: TypographyValues;
+  rhythm: RhythmValues;
+  radius: number;
+  shadow: ShadowValues;
+};
+const DEFAULT_SANS = '"Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif';
+const SYSTEM_SANS = 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const DEFAULT_MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+const SYSTEM_MONO = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
 
-const TYPE_ROLES: ReadonlyArray<{ id: string; label: string; token: string; size: string }> = [
-  { id: "font-sans", label: "Body", token: "font-sans", size: "13.5" },
-  { id: "font-sans-strong", label: "Title", token: "font-sans", size: "15" },
-  { id: "font-mono", label: "Mono", token: "font-mono", size: "12.5" },
-];
+const DEFAULT_EDITOR_VALUES: EditorValues = {
+  colors: {
+    canvas: "#ffffff", ink: "#333333", sidebar: "#f8f8f8", sidebarForeground: "#333333",
+    primary: "#444444", timelineAccent: "#4779a8", success: "#3b966c", warning: "#b56b2c",
+    attention: "#c49a32", destructive: "#b6383f", prMerged: "#7550a8",
+  },
+  typography: { fontSans: DEFAULT_SANS, fontMono: DEFAULT_MONO, textScale: 1, lineHeight: 1 },
+  rhythm: { density: 4, tracking: 0, rowHeight: 28, iconStroke: 1.75 },
+  radius: 8,
+  shadow: { x: 0, y: 2, blur: 0, spread: 0, color: "#333333", opacity: 15 },
+};
 
-function TypeSheet({ computed }: { computed: Computed }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      {TYPE_ROLES.map((row) => (
-        <FieldRow key={row.id} specimen={`type:${row.id}`} label={row.label}>
-          <FieldWell title={computed[row.token]?.value}>
-            <Icon name="TextWrap" className="size-3.5 shrink-0 opacity-60" />
-            <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontFamily: row.token === "font-mono" ? MONO : SANS }}>
-              {firstFamily(computed[row.token]?.value)}
-            </span>
-            <span style={{ ...TEXT_VALUE, fontSize: 10.5, flex: "none" }}>{row.size}</span>
-          </FieldWell>
-        </FieldRow>
-      ))}
-    </div>
-  );
+const COLOR_STATE_KEYS: Record<(typeof DIRECT_COLOR_CONTROLS)[number]["id"], keyof DirectColors> = {
+  canvas: "canvas",
+  ink: "ink",
+  sidebar: "sidebar",
+  "sidebar-foreground": "sidebarForeground",
+  primary: "primary",
+  "timeline-accent": "timelineAccent",
+  success: "success",
+  warning: "warning",
+  attention: "attention",
+  destructive: "destructive",
+  "pr-merged": "prMerged",
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-/** The preview card: output, not control — every type role on one artefact. */
-function TypePreviewCard() {
+function px(value: string | undefined): number | null {
+  if (!value) return null;
+  const amount = Number.parseFloat(value);
+  if (!Number.isFinite(amount)) return null;
+  if (value.trim().endsWith("rem")) return amount * 16;
+  if (value.trim().endsWith("em")) return amount * 16;
+  return amount;
+}
+
+function numberValue(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function rgbToHex(value: string | undefined): string | null {
+  if (!value) return null;
+  const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(value);
+  if (!match) return null;
+  const channels = [match[1], match[2], match[3]].map((channel) => Number(channel).toString(16).padStart(2, "0"));
+  const alpha = match[4] === undefined ? "" : Math.round(Number(match[4]) * 255).toString(16).padStart(2, "0");
+  return `#${channels.join("")}${alpha}`;
+}
+
+function hexToRgb(value: string): string {
+  const normalized = value.slice(1);
+  const channels = normalized.length >= 6
+    ? [normalized.slice(0, 2), normalized.slice(2, 4), normalized.slice(4, 6)].map((channel) => Number.parseInt(channel, 16))
+    : [0, 0, 0];
+  const alpha = normalized.length === 8 ? Number.parseInt(normalized.slice(6, 8), 16) / 255 : 1;
+  return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
+}
+
+function valuesFromComputed(computed: Computed, resolvedRadii: Record<string, string>): EditorValues {
+  const color = (token: string, fallback: string) => {
+    const raw = computed[token]?.value.trim();
+    if (raw && /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(raw)) return raw.toLowerCase();
+    return rgbToHex(computed[token]?.rgb)?.slice(0, 7) ?? fallback;
+  };
+  const textScale = numberValue(computed["tp-text-scale"]?.value)
+    ?? clamp((px(computed["text-sm"]?.value) ?? 13) / 13, 0.9, 1.1);
+  const lineHeight = numberValue(computed["tp-line-height"]?.value) ?? 1;
+  const shadowOpacity = numberValue(computed["tp-shadow-opacity-percent"]?.value)
+    ?? (numberValue(computed["shadow-opacity"]?.value) ?? 0.15) * 100;
+  return {
+    colors: {
+      canvas: color("canvas", DEFAULT_EDITOR_VALUES.colors.canvas),
+      ink: color("ink", DEFAULT_EDITOR_VALUES.colors.ink),
+      sidebar: color("sidebar", DEFAULT_EDITOR_VALUES.colors.sidebar),
+      sidebarForeground: color("sidebar-foreground", DEFAULT_EDITOR_VALUES.colors.sidebarForeground),
+      primary: color("primary", DEFAULT_EDITOR_VALUES.colors.primary),
+      timelineAccent: color("timeline-accent", DEFAULT_EDITOR_VALUES.colors.timelineAccent),
+      success: color("success", DEFAULT_EDITOR_VALUES.colors.success),
+      warning: color("warning", DEFAULT_EDITOR_VALUES.colors.warning),
+      attention: color("attention", DEFAULT_EDITOR_VALUES.colors.attention),
+      destructive: color("destructive", DEFAULT_EDITOR_VALUES.colors.destructive),
+      prMerged: color("pr-merged", DEFAULT_EDITOR_VALUES.colors.prMerged),
+    },
+    typography: {
+      fontSans: computed["font-sans"]?.value || DEFAULT_SANS,
+      fontMono: computed["font-mono"]?.value || DEFAULT_MONO,
+      textScale: clamp(textScale, 0.9, 1.1),
+      lineHeight: clamp(lineHeight, 0.9, 1.15),
+    },
+    rhythm: {
+      density: clamp(px(computed.spacing?.value) ?? 4, 3, 5),
+      tracking: clamp(numberValue(computed["tracking-normal"]?.value) ?? 0, -0.04, 0.08),
+      rowHeight: clamp(px(computed["bb-sidebar-row-height"]?.value) ?? 28, 24, 40),
+      iconStroke: clamp(numberValue(computed["icon-stroke-width"]?.value) ?? 1.75, 1, 2.5),
+    },
+    radius: clamp(px(computed.radius?.value) ?? numberValue(resolvedRadii["radius-lg"]) ?? 8, 0, 20),
+    shadow: {
+      x: clamp(px(computed["shadow-x"]?.value) ?? 0, -24, 24),
+      y: clamp(px(computed["shadow-y"]?.value) ?? 2, -24, 24),
+      blur: clamp(px(computed["shadow-blur"]?.value) ?? 0, 0, 48),
+      spread: clamp(px(computed["shadow-spread"]?.value) ?? 0, -24, 24),
+      // Core's `--shadow-color` is already translucent. The editor owns color
+      // and opacity separately, so seed an unmanaged shadow from the solid ink
+      // anchor and only prefer the explicit editor color once one exists.
+      color: color("tp-shadow-color", color("ink", DEFAULT_EDITOR_VALUES.shadow.color)),
+      opacity: clamp(shadowOpacity, 0, 80),
+    },
+  };
+}
+
+function SliderField({ specimen, label, value, min, max, step, unit, displayValue, disabled, onChange, onCommit }: {
+  specimen: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  displayValue?: (value: number) => string;
+  disabled: boolean;
+  onChange: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
+  const formatted = displayValue?.(value) ?? `${Number.isInteger(value) ? value : Number(value.toFixed(3))}${unit}`;
   return (
-    <div
-      data-tp-type-preview=""
-      style={{ marginTop: 4, padding: "14px 16px", borderRadius: RADIUS_LG, background: v("card"), boxShadow: `inset 0 0 0 1px ${v("border")}` }}
-    >
-      <div style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Preview</div>
-      <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.01em", color: v("foreground") }}>Endless theme family</div>
-      <p style={{ margin: "6px 0 0", fontSize: 13.5, lineHeight: "20px", color: v("foreground") }}>
-        Body copy carries most of the interface. It sets reading rhythm, so its family and size decide how dense the product feels.
-      </p>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-        <Badge tone="success"><Dot color={v("success")} size={6} /> Running</Badge>
-        <span style={{ ...TEXT_CATEGORY }}>Label</span>
+    <div data-tp-specimen={specimen} style={{ minWidth: 0, padding: "3px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+        <span style={{ ...TEXT_LABEL, flex: 1, minWidth: 0 }}>{label}</span>
+        <span style={{ ...TEXT_VALUE, fontSize: 10.5 }}>{formatted}</span>
       </div>
-      <div style={{ ...TEXT_VALUE, fontSize: 11.5, marginTop: 6, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-        themes/endless-color.css · 14:18
-      </div>
-    </div>
-  );
-}
-
-function RadiusSheet({ resolved }: { resolved: Record<string, string> }) {
-  // Corner radius the way a design tool shows it: a live corner preview, then
-  // the resolved value in a numeric field with its unit.
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      {RADIUS_SPECIMENS.map((specimen) => (
-        <FieldRow key={specimen.id} specimen={`radius:${specimen.id}`} label={specimen.title}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-            <span
-              aria-hidden
-              style={{
-                width: 24, height: 24, flex: "none", borderTopLeftRadius: specimen.source,
-                borderTop: `2px solid ${v("foreground")}`, borderLeft: `2px solid ${v("foreground")}`,
-                opacity: 0.65,
-              }}
-            />
-            <FieldWell title={specimen.source}>
-              <span style={{ flex: 1, minWidth: 0, ...TEXT_VALUE, color: v("foreground"), overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{resolved[specimen.id] ?? ""}</span>
-              <span style={{ ...TEXT_VALUE, fontSize: 10.5, flex: "none" }}>px</span>
-            </FieldWell>
-          </span>
-        </FieldRow>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Foundation — the primary section. Everything else in the theme derives from
-// these values, so they get the largest controls and the most room.
-// ---------------------------------------------------------------------------
-
-function FoundationRow({ token, computed }: { token: string; computed: Computed }) {
-  const c = computed[token];
-  return (
-    <div
-      data-tp-specimen={`color:${token}`}
-      style={{ display: "grid", gridTemplateColumns: "44px minmax(0, 1fr) auto", alignItems: "center", columnGap: 14, minHeight: 44, padding: "0 4px", borderBottom: `1px solid ${v("border-hairline", v("border"))}` }}
-    >
-      <span
-        title={c?.sidebar ? `${c.value}\nsidebar override: ${c.sidebar}` : c?.value}
-        style={{ width: 44, height: 30, borderRadius: RADIUS_MD, background: c?.value ? v(token) : "transparent", boxShadow: `inset 0 0 0 1px ${c?.sidebar ? v("warning") : v("border")}` }}
+      <Slider
+        aria-label={label}
+        min={min}
+        max={max}
+        step={step}
+        value={[value]}
+        disabled={disabled}
+        className="h-7 cursor-pointer disabled:cursor-not-allowed"
+        onValueChange={(next) => onChange(next[0] ?? value)}
+        onValueCommit={(next) => onCommit(next[0] ?? value)}
       />
-      <span data-tp-role="label" style={{ ...TEXT_LABEL, fontSize: 13, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{token}</span>
-      <span data-tp-role="value" style={{ ...TEXT_VALUE, fontSize: 12, whiteSpace: "nowrap" }}>{c?.hex ?? ""}</span>
     </div>
   );
 }
 
-function FoundationSection({ computed }: { computed: Computed }) {
+function FontField({ specimen, label, value, options, disabled, onChange }: {
+  specimen: string;
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ label: string; value: string }>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const selectedLabel = options.find((option) => option.value === value)?.label ?? (firstFamily(value) || "Current");
   return (
-    <div data-tp-block="foundation">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", columnGap: 28 }}>
-        {[SURFACE_TOKENS.slice(0, 4), SURFACE_TOKENS.slice(4)].map((group, index) => (
-          <div key={index} style={{ minWidth: 0 }}>
-            {group.map((token) => <FoundationRow key={token} token={token} computed={computed} />)}
-          </div>
-        ))}
-      </div>
-      <div
-        data-tp-foundation-note=""
-        style={{ marginTop: 14, padding: "12px 14px", borderRadius: RADIUS_LG, background: v("surface-recessed-soft-solid", v("card")), boxShadow: `inset 0 0 0 1px ${v("border-hairline", v("border"))}` }}
-      >
-        <p style={{ margin: 0, ...TEXT_SUPPORT }}>
-          These surfaces are the theme's foundation. Every other value below — ink, accents, status, lines — is derived from the canvas and ink anchors, so changing a foundation value moves the whole theme with it.
-        </p>
-      </div>
+    <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateColumns: "54px minmax(0, 1fr)", alignItems: "center", gap: 6, minHeight: 32 }}>
+      <span style={{ ...TEXT_LABEL }}>{label}</span>
+      <Select value={value} onValueChange={onChange} disabled={disabled}>
+        <SelectTrigger aria-label={label} className="h-7 min-w-0 px-2 text-xs" style={{ fontFamily: value }}>
+          <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{selectedLabel}</span>
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => <SelectItem key={option.label} value={option.value}>{option.label}</SelectItem>)}
+        </SelectContent>
+      </Select>
     </div>
   );
 }
 
-/**
- * The thread list: bb's sidebar rows as a live demonstration. Rows highlight on
- * hover and expand to representative unfurled content, so a theme can be judged
- * against the states users actually produce. Rows are real buttons, so keyboard
- * focus and Enter/Space work and screen readers get the expanded state.
- */
-const THREAD_ROWS = [
-  { id: "unread", label: "Endless theme family", state: "rest" as const, dot: "unread" as const, detail: "Neon orange seam, blue selection, calm UV canvas. 3 files changed." },
-  { id: "open", label: "Specimen sheets + social grid", state: "selected" as const, dot: undefined, detail: "Six tiles: surfaces, ink, accents, status, lines, type." },
-  { id: "split", label: "Fix pink split row", state: "split" as const, dot: "status" as const, detail: "oklch mix resolved against the sidebar, not the canvas." },
-];
+const TYPE_STEPS = [
+  { id: "2xs", size: 10, line: 14 },
+  { id: "xs", size: 12, line: 16 },
+  { id: "sm", size: 13, line: 19 },
+  { id: "base", size: 15, line: 22 },
+] as const;
 
-function ThreadListSpecimen() {
-  const [expanded, setExpanded] = useState<string | null>(null);
+function TypeSteps({ typography }: { typography: TypographyValues }) {
   return (
-    <div
-      data-tp-thread-list=""
-      className="fixed bg-sidebar"
-      style={{ ...sidebarScope, overflow: "hidden", background: v("sidebar"), boxShadow: `inset 0 0 0 1px ${v("border-seam", v("border"))}`, borderRadius: RADIUS_MD, padding: 5 }}
-    >
-      {THREAD_ROWS.map((row) => {
-        const isOpen = expanded === row.id;
-        return (
-          <div key={row.id}>
-            <button
-              type="button"
-              data-tp-thread-row={row.id}
-              aria-expanded={isOpen}
-              onClick={() => setExpanded((current) => (current === row.id ? null : row.id))}
-              className="w-full cursor-pointer rounded-[10px] text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 30, padding: "0 10px", border: 0, background: "transparent", font: "inherit", color: v("sidebar-foreground"), ...rowStyle(isOpen ? "selected" : row.state) }}
-            >
-              <span aria-hidden style={{ flex: "none", fontSize: 9, opacity: 0.6, transform: isOpen ? "rotate(90deg)" : undefined, transition: "transform 140ms ease" }}>▶</span>
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", fontSize: 13 }}>{row.label}</span>
-              {row.dot === "unread" ? <Dot color={v("foreground")} size={5} /> : row.dot === "status" ? <Dot color={`color-mix(in srgb, ${v("muted-foreground")} 60%, transparent)`} size={5} /> : null}
-            </button>
-            {isOpen ? (
-              <div data-tp-thread-detail={row.id} style={{ margin: "2px 6px 6px 26px", padding: "8px 10px", borderRadius: RADIUS_MD, background: v("surface-recessed", "rgba(127,127,127,.05)"), boxShadow: `inset 0 0 0 1px ${v("border-hairline", v("border"))}` }}>
-                <div style={{ ...TEXT_SUPPORT, color: v("sidebar-foreground"), opacity: 0.85 }}>{row.detail}</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-                  <Badge tone="success"><Dot color={v("success")} size={5} /> Running</Badge>
-                  <span style={{ ...TEXT_VALUE, fontSize: 10.5 }}>bb/endless-theme</span>
-                </div>
+    <div data-tp-derived="type-steps" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 3, marginTop: 4 }}>
+      {TYPE_STEPS.map((step) => (
+        <span key={step.id} title={`${step.id} · ${(step.size * typography.textScale).toFixed(1)} / ${(step.line * typography.lineHeight).toFixed(1)}px`} style={{ minWidth: 0, padding: "3px 4px", borderRadius: RADIUS_MD, background: v("surface-recessed-soft-solid", v("card")), textAlign: "center", overflow: "hidden" }}>
+          <span style={{ display: "block", fontFamily: typography.fontSans, fontSize: clamp(step.size * typography.textScale, 9, 17), lineHeight: `${step.line * typography.lineHeight}px` }}>Aa</span>
+          <span style={{ ...TEXT_VALUE, fontFamily: typography.fontMono, fontSize: 9 }}>{step.id}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ContrastFloor({ colors }: { colors: DirectColors }) {
+  const canvas = contrastRatio(hexToRgb(colors.ink), hexToRgb(colors.canvas));
+  const sidebar = contrastRatio(hexToRgb(colors.sidebarForeground), hexToRgb(colors.sidebar), hexToRgb(colors.canvas));
+  const item = (label: string, ratio: number | null) => (
+    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+      <span style={{ ...TEXT_SUPPORT }}>{label}</span>
+      <Badge tone={ratio === null || ratio >= 4.5 ? "success" : "destructive"}>{ratio === null ? "—" : `${ratio.toFixed(1)}:1`}</Badge>
+    </span>
+  );
+  return (
+    <div data-tp-contrast-floor="" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 28, marginTop: 4 }}>
+      <span style={{ ...TEXT_LABEL }}>Contrast floor</span>
+      {item("Canvas / ink", canvas)}
+      {item("Sidebar", sidebar)}
+    </div>
+  );
+}
+
+function ColorEditor({ values, disabled, onChange, onCommit }: {
+  values: DirectColors;
+  disabled: boolean;
+  onChange: (values: DirectColors) => void;
+  onCommit: (family: ColorFamily, values: DirectColors) => void;
+}) {
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pending = useRef<{ family: ColorFamily; values: DirectColors } | null>(null);
+  const flush = () => {
+    if (timer.current !== undefined) clearTimeout(timer.current);
+    timer.current = undefined;
+    const next = pending.current;
+    pending.current = null;
+    if (next) onCommit(next.family, next.values);
+  };
+  const schedule = (family: ColorFamily, next: DirectColors) => {
+    if (timer.current !== undefined) clearTimeout(timer.current);
+    pending.current = { family, values: next };
+    timer.current = setTimeout(flush, 120);
+  };
+  useEffect(() => () => {
+    if (timer.current !== undefined) clearTimeout(timer.current);
+  }, []);
+  return (
+    <div data-tp-block="colors">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", columnGap: 18, rowGap: 2 }}>
+        {DIRECT_COLOR_CONTROLS.map((control) => {
+          const key = COLOR_STATE_KEYS[control.id];
+          return (
+            <label key={control.id} data-tp-specimen={`color:${control.id}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 34 }}>
+              <span style={{ ...TEXT_LABEL, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{control.label}</span>
+              <BbInput
+                type="color"
+                aria-label={`${control.label} color`}
+                value={values[key].slice(0, 7)}
+                disabled={disabled}
+                className="h-7 w-9 cursor-pointer p-1 disabled:cursor-not-allowed"
+                onChange={(event) => {
+                  const next = { ...values, [key]: event.target.value };
+                  onChange(next);
+                  schedule(control.family, next);
+                }}
+                onBlur={flush}
+              />
+              <span style={{ ...TEXT_VALUE, fontSize: 10.5, textAlign: "right" }}>{values[key].slice(0, 7)}</span>
+            </label>
+          );
+        })}
+      </div>
+      <ContrastFloor colors={values} />
+    </div>
+  );
+}
+
+function RadiusPreviews({ value }: { value: number }) {
+  const ladder = [Math.max(0, value - 4), Math.max(0, value - 2), value, value + 4];
+  return (
+    <div data-tp-derived="radius-ladder" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 4, marginTop: 7 }}>
+      {RADIUS_SPECIMENS.map((specimen, index) => (
+        <span key={specimen.id} title={`${specimen.title} · ${ladder[index]}px`} style={{ height: 31, borderRadius: ladder[index], background: v("surface-recessed-soft-solid", v("card")), boxShadow: `inset 0 0 0 1px ${v("border")}`, display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>
+          {ladder[index]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const SHADOW_LADDER = ["shadow-2xs", "shadow-xs", "shadow-sm", "shadow", "shadow-md", "shadow-lift", "shadow-lg", "shadow-xl", "shadow-2xl"] as const;
+
+function DerivedValues({ computed }: { computed: Computed }) {
+  return (
+    <Collapsible defaultOpen={false}>
+      <CollapsibleTrigger asChild>
+        <BbButton data-tp-derived-trigger="" variant="ghost" size="sm" className="group h-8 w-full cursor-pointer justify-start px-2 text-xs">
+          <Icon name="ChevronRight" className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
+          Derived values
+        </BbButton>
+      </CollapsibleTrigger>
+      <CollapsibleContent data-tp-derived-values="" style={{ paddingTop: 8 }}>
+        <SpecimenGrid min={250}>
+          {COLOR_GROUPS.map((group) => (
+            <SpecimenBlock key={group.id} id={`derived-${group.id}`} title={group.title}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {group.tokens.map((token) => <TokenRow key={token} name={token} computed={computed} {...colorGroupRowProps(group.contrast, token)} />)}
               </div>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
+            </SpecimenBlock>
+          ))}
+          <SpecimenBlock id="derived-shadow" title="Shadow ladder" wide>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(78px, 1fr))", gap: 8 }}>
+              {SHADOW_LADDER.map((token) => (
+                <div key={token} style={{ minWidth: 0, height: 42, borderRadius: RADIUS_MD, background: v("card"), boxShadow: v(token), display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>{token.replace("shadow-", "")}</div>
+              ))}
+            </div>
+          </SpecimenBlock>
+        </SpecimenGrid>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -1158,14 +1350,12 @@ function OverlaySpecimens({ vertical = false }: { vertical?: boolean }) {
               variant="outline"
               size="sm"
               className="h-7 flex-1 cursor-pointer px-2 text-xs"
-              onClick={() => toast.success("Branch name copied", { description: "bb/endless-theme" })}
             >
               Copy branch
             </BbButton>
             <BbButton
               size="sm"
               className="h-7 flex-1 cursor-pointer px-2 text-xs"
-              onClick={() => toast.success("Opened in split")}
             >
               Open in split
             </BbButton>
@@ -1179,35 +1369,204 @@ function OverlaySpecimens({ vertical = false }: { vertical?: boolean }) {
   );
 }
 
-/** Area 2 — the style sheet. Foundation leads; the derived families follow. */
-function StyleSheetSection({ computed, radii }: { computed: Computed; radii: Record<string, string> }) {
-  const derived = COLOR_GROUPS.filter((group) => group.id !== "surfaces");
+function SystemBlock({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <div>
-      <div data-tp-block="surfaces" style={{ marginBottom: 26 }}>
-        <div data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 10 }}>Foundation · surfaces</div>
-        <FoundationSection computed={computed} />
+    <div data-tp-block={id} style={{ minWidth: 0 }}>
+      <div data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 6 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function TypographyEditor({ value, disabled, onChange, onCommit }: {
+  value: TypographyValues;
+  disabled: boolean;
+  onChange: (value: TypographyValues) => void;
+  onCommit: (value: TypographyValues) => void;
+}) {
+  const update = <K extends keyof TypographyValues>(key: K, next: TypographyValues[K], commit: boolean) => {
+    const updated = { ...value, [key]: next };
+    onChange(updated);
+    if (commit) onCommit(updated);
+  };
+  return (
+    <SystemBlock id="typography" title="Typography">
+      <FontField
+        specimen="type:font-sans"
+        label="Sans"
+        value={value.fontSans}
+        disabled={disabled}
+        options={[{ label: "BB default", value: DEFAULT_SANS }, { label: "System sans", value: SYSTEM_SANS }]}
+        onChange={(next) => update("fontSans", next, true)}
+      />
+      <FontField
+        specimen="type:font-mono"
+        label="Mono"
+        value={value.fontMono}
+        disabled={disabled}
+        options={[{ label: "BB default", value: DEFAULT_MONO }, { label: "System mono", value: SYSTEM_MONO }]}
+        onChange={(next) => update("fontMono", next, true)}
+      />
+      <SliderField specimen="type:text-scale" label="Text scale" value={value.textScale} min={0.9} max={1.1} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("textScale", next, false)} onCommit={(next) => update("textScale", next, true)} />
+      <SliderField specimen="type:line-height" label="Line height" value={value.lineHeight} min={0.9} max={1.15} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("lineHeight", next, false)} onCommit={(next) => update("lineHeight", next, true)} />
+      <TypeSteps typography={value} />
+    </SystemBlock>
+  );
+}
+
+function RhythmEditor({ value, disabled, onChange, onCommit }: {
+  value: RhythmValues;
+  disabled: boolean;
+  onChange: (value: RhythmValues) => void;
+  onCommit: (value: RhythmValues) => void;
+}) {
+  const update = <K extends keyof RhythmValues>(key: K, next: RhythmValues[K], commit: boolean) => {
+    const updated = { ...value, [key]: next };
+    onChange(updated);
+    if (commit) onCommit(updated);
+  };
+  return (
+    <SystemBlock id="rhythm" title="Rhythm">
+      <SliderField specimen="rhythm:density" label="Density" value={value.density} min={3} max={5} step={0.25} unit="px" disabled={disabled} onChange={(next) => update("density", next, false)} onCommit={(next) => update("density", next, true)} />
+      <SliderField specimen="rhythm:tracking" label="Tracking" value={value.tracking} min={-0.04} max={0.08} step={0.005} unit="em" disabled={disabled} onChange={(next) => update("tracking", next, false)} onCommit={(next) => update("tracking", next, true)} />
+      <SliderField specimen="rhythm:row-height" label="Sidebar row" value={value.rowHeight} min={24} max={40} step={1} unit="px" disabled={disabled} onChange={(next) => update("rowHeight", next, false)} onCommit={(next) => update("rowHeight", next, true)} />
+      <SliderField specimen="rhythm:icon-stroke" label="Icon stroke" value={value.iconStroke} min={1} max={2.5} step={0.05} unit="" disabled={disabled} onChange={(next) => update("iconStroke", next, false)} onCommit={(next) => update("iconStroke", next, true)} />
+      <div data-tp-derived="row-previews" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 5, marginTop: 5 }}>
+        {([
+          ["Pointer", value.rowHeight],
+          ["Touch", Math.max(40, value.rowHeight + 12)],
+        ] as const).map(([label, height]) => (
+          <div key={label} style={{ minWidth: 0 }}>
+            <div style={{ ...TEXT_VALUE, fontSize: 9.5, marginBottom: 3 }}>{label} · {height}px</div>
+            <div style={{ height, minHeight: 24, maxHeight: 52, display: "flex", alignItems: "center", gap: value.density * 1.25, padding: `0 ${value.density * 1.5}px`, borderRadius: RADIUS_MD, background: v("sidebar"), color: v("sidebar-foreground"), boxShadow: `inset 0 0 0 1px ${v("sidebar-border", v("border"))}`, overflow: "hidden" }}>
+              <Icon name="MessageSquare" style={{ width: 12, height: 12, strokeWidth: value.iconStroke }} />
+              <span style={{ ...TEXT_LABEL, color: "inherit", fontSize: 10.5, letterSpacing: `${value.tracking}em`, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Theme preview</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </SystemBlock>
+  );
+}
+
+function RadiusEditor({ value, disabled, onChange, onCommit }: {
+  value: number;
+  disabled: boolean;
+  onChange: (value: number) => void;
+  onCommit: (value: number) => void;
+}) {
+  return (
+    <SystemBlock id="radius" title="Corner radius">
+      <SliderField specimen="radius:base" label="Base" value={value} min={0} max={20} step={1} unit="px" disabled={disabled} onChange={onChange} onCommit={onCommit} />
+      <RadiusPreviews value={value} />
+    </SystemBlock>
+  );
+}
+
+function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
+  value: ShadowValues;
+  mode: Mode;
+  disabled: boolean;
+  onChange: (value: ShadowValues) => void;
+  onCommit: (value: ShadowValues) => void;
+}) {
+  const colorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingColor = useRef<ShadowValues | null>(null);
+  const flushColor = () => {
+    if (colorTimer.current !== undefined) clearTimeout(colorTimer.current);
+    colorTimer.current = undefined;
+    const next = pendingColor.current;
+    pendingColor.current = null;
+    if (next) onCommit(next);
+  };
+  useEffect(() => () => {
+    if (colorTimer.current !== undefined) clearTimeout(colorTimer.current);
+  }, []);
+  const update = <K extends keyof ShadowValues>(key: K, next: ShadowValues[K], commit: boolean) => {
+    const updated = { ...value, [key]: next };
+    onChange(updated);
+    if (commit) onCommit(updated);
+  };
+  return (
+    <SystemBlock id="shadow" title="Shadow">
+      <SliderField specimen="shadow:y" label="Y" value={value.y} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("y", next, false)} onCommit={(next) => update("y", next, true)} />
+      <SliderField specimen="shadow:blur" label="Blur" value={value.blur} min={0} max={48} step={1} unit="px" disabled={disabled} onChange={(next) => update("blur", next, false)} onCommit={(next) => update("blur", next, true)} />
+      <div style={{ ...TEXT_CATEGORY, marginTop: 3 }}>Color + opacity · {mode}</div>
+      <label data-tp-specimen="shadow:color" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 32 }}>
+        <span style={{ ...TEXT_LABEL }}>Color</span>
+        <BbInput
+          type="color"
+          aria-label="Shadow color"
+          value={value.color.slice(0, 7)}
+          disabled={disabled}
+          className="h-7 w-9 cursor-pointer p-1 disabled:cursor-not-allowed"
+          onChange={(event) => {
+            const next = { ...value, color: event.target.value };
+            onChange(next);
+            pendingColor.current = next;
+            if (colorTimer.current !== undefined) clearTimeout(colorTimer.current);
+            colorTimer.current = setTimeout(flushColor, 120);
+          }}
+          onBlur={flushColor}
+        />
+        <span style={{ ...TEXT_VALUE, fontSize: 10.5, textAlign: "right" }}>{value.color.slice(0, 7)}</span>
+      </label>
+      <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", next, false)} onCommit={(next) => update("opacity", next, true)} />
+      <div data-tp-shadow-preview="" style={{ height: 42, margin: "5px 9px 7px", borderRadius: RADIUS_MD, background: v("card"), boxShadow: `${value.x}px ${value.y}px ${value.blur}px ${value.spread}px color-mix(in oklab, ${value.color} ${value.opacity}%, transparent)`, display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>
+        Preview
+      </div>
+      <Collapsible defaultOpen={false}>
+        <CollapsibleTrigger asChild>
+          <BbButton variant="ghost" size="sm" className="group h-7 w-full cursor-pointer justify-start px-1.5 text-xs text-muted-foreground">
+            <Icon name="ChevronRight" className="size-3 transition-transform group-data-[state=open]:rotate-90" />
+            Advanced geometry
+          </BbButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SliderField specimen="shadow:x" label="X" value={value.x} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("x", next, false)} onCommit={(next) => update("x", next, true)} />
+          <SliderField specimen="shadow:spread" label="Spread" value={value.spread} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("spread", next, false)} onCommit={(next) => update("spread", next, true)} />
+        </CollapsibleContent>
+      </Collapsible>
+    </SystemBlock>
+  );
+}
+
+/** Area 2 — direct controls first; large derived families stay collapsed. */
+function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommit }: {
+  computed: Computed;
+  radii: Record<string, string>;
+  mode: Mode;
+  busy: boolean;
+  resetRevision: number;
+  onCommit: (edit: ThemeEdit) => void;
+}) {
+  const [values, setValues] = useState<EditorValues>(DEFAULT_EDITOR_VALUES);
+  const ready = Boolean(computed.canvas?.value && computed.ink?.value);
+  useEffect(() => {
+    if (ready) setValues(valuesFromComputed(computed, radii));
+  }, [computed, radii, ready, resetRevision]);
+  const disabled = busy || !ready;
+  const setTypography = (typography: TypographyValues) => setValues((current) => ({ ...current, typography }));
+  const setRhythm = (rhythm: RhythmValues) => setValues((current) => ({ ...current, rhythm }));
+  const setShadow = (shadow: ShadowValues) => setValues((current) => ({ ...current, shadow }));
+  return (
+    <div aria-busy={busy || undefined}>
+      <div data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Mode colors</div>
+      <ColorEditor
+        values={values.colors}
+        disabled={disabled}
+        onChange={(colors) => setValues((current) => ({ ...current, colors }))}
+        onCommit={(family, colors) => onCommit({ kind: "colors", family, ...colors })}
+      />
+
+      <div data-tp-block="systems" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(225px, 1fr))", gap: 18, alignItems: "start", marginTop: 14, marginBottom: 10 }}>
+        <TypographyEditor value={values.typography} disabled={disabled} onChange={setTypography} onCommit={(typography) => onCommit({ kind: "typography", ...typography })} />
+        <RhythmEditor value={values.rhythm} disabled={disabled} onChange={setRhythm} onCommit={(rhythm) => onCommit({ kind: "rhythm", ...rhythm })} />
+        <RadiusEditor value={values.radius} disabled={disabled} onChange={(radius) => setValues((current) => ({ ...current, radius }))} onCommit={(value) => onCommit({ kind: "radius", value })} />
+        <ShadowEditor value={values.shadow} mode={mode} disabled={disabled} onChange={setShadow} onCommit={(shadow) => onCommit({ kind: "shadow", ...shadow })} />
       </div>
 
-      <div data-tp-role="section" style={{ ...TEXT_SECTION, fontSize: 13, marginBottom: 12 }}>Derived values</div>
-      <SpecimenGrid min={280}>
-        {derived.map((group) => (
-          <SpecimenBlock key={group.id} id={group.id} title={group.title}>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {group.tokens.map((token) => (
-                <TokenRow key={token} name={token} computed={computed} targetable {...colorGroupRowProps(group.contrast, token)} />
-              ))}
-            </div>
-          </SpecimenBlock>
-        ))}
-        <SpecimenBlock id="type" title="Typography">
-          <TypeSheet computed={computed} />
-          <TypePreviewCard />
-        </SpecimenBlock>
-        <SpecimenBlock id="radius" title="Corner radius">
-          <RadiusSheet resolved={radii} />
-        </SpecimenBlock>
-      </SpecimenGrid>
+      <DerivedValues computed={computed} />
     </div>
   );
 }
@@ -1228,11 +1587,11 @@ function ComponentsSection() {
     <SpecimenGrid min={280}>
       <SpecimenBlock id="buttons" title="Buttons" wide>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <BbButton size="sm" className="cursor-pointer" onClick={() => toast.success("Primary action")}>Default</BbButton>
-          <BbButton size="sm" variant="secondary" className="cursor-pointer" onClick={() => toast.success("Secondary action")}>Secondary</BbButton>
-          <BbButton size="sm" variant="outline" className="cursor-pointer" onClick={() => toast.success("Outline action")}>Outline</BbButton>
-          <BbButton size="sm" variant="ghost" className="cursor-pointer" onClick={() => toast.success("Ghost action")}>Ghost</BbButton>
-          <BbButton size="sm" variant="destructive" className="cursor-pointer" onClick={() => toast.error("Deleted")}>Delete</BbButton>
+          <BbButton size="sm" className="cursor-pointer">Default</BbButton>
+          <BbButton size="sm" variant="secondary" className="cursor-pointer">Secondary</BbButton>
+          <BbButton size="sm" variant="outline" className="cursor-pointer">Outline</BbButton>
+          <BbButton size="sm" variant="ghost" className="cursor-pointer">Ghost</BbButton>
+          <BbButton size="sm" variant="destructive" className="cursor-pointer">Delete</BbButton>
           <BbButton size="sm" variant="outline" disabled>Disabled</BbButton>
         </div>
       </SpecimenBlock>
@@ -1281,24 +1640,17 @@ function ComponentsSection() {
 
 /** The rail beside the mock: the interaction surfaces, compact. */
 function StageRail({ withOverlayHeading = true }: { withOverlayHeading?: boolean }) {
-  return (
-    <>
-      {withOverlayHeading ? (
-        <SpecimenBlock title={AREA_TITLES.overlays}>
-          <OverlaySpecimens vertical />
-        </SpecimenBlock>
-      ) : (
-        <div style={{ marginBottom: 18 }}><OverlaySpecimens vertical /></div>
-      )}
-      <SpecimenBlock id="thread-list" title="Thread list">
-        <ThreadListSpecimen />
-      </SpecimenBlock>
-    </>
+  return withOverlayHeading ? (
+    <SpecimenBlock title={AREA_TITLES.overlays}>
+      <OverlaySpecimens vertical />
+    </SpecimenBlock>
+  ) : (
+    <div style={{ marginBottom: 18 }}><OverlaySpecimens vertical /></div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// The theme control: bb's own select, one option per theme × mode. Every row
+// The theme control: bb's own select, one option per theme. Every row
 // previews the theme it names — its prominent colours as chips, its face as
 // live type — so the choice is made on appearance rather than on an id.
 // ---------------------------------------------------------------------------
@@ -1308,7 +1660,7 @@ type Swatch = {
   primary: string | null; accent: string | null; foreground: string | null;
   fontSans: string | null; fontMono: string | null;
 };
-type ThemeEntry = { id: string; name: string; light: Swatch | null; dark: Swatch | null };
+type ThemeEntry = { id: string; name: string; source: "builtin" | "custom" | "plugin"; light: Swatch | null; dark: Swatch | null };
 type Catalog = { activeThemeId: string | null; themes: ThemeEntry[]; revision: number };
 
 const EMPTY_CATALOG: Catalog = { activeThemeId: null, themes: [], revision: 0 };
@@ -1337,18 +1689,6 @@ function Chips({ swatch, w = 13, h = 20 }: { swatch: Swatch | null; w?: number; 
       ))}
     </span>
   );
-}
-
-// Theme ids may themselves contain ":" (plugin:endless:endless-color), so the
-// mode leads and the first separator wins.
-const SELECTION_SEPARATOR = "::";
-const selectionValue = (themeId: string, mode: Mode): string => `${mode}${SELECTION_SEPARATOR}${themeId}`;
-function parseSelectionValue(value: string): ThemeSelection {
-  const separator = value.indexOf(SELECTION_SEPARATOR);
-  return {
-    mode: value.slice(0, separator) as Mode,
-    themeId: value.slice(separator + SELECTION_SEPARATOR.length),
-  };
 }
 
 /**
@@ -1430,6 +1770,7 @@ function ThemePicker({
   computed,
   mode,
   pendingSelection,
+  editing,
   selectionSlow,
   selectionFailed,
   onPick,
@@ -1439,6 +1780,7 @@ function ThemePicker({
   computed: Computed;
   mode: Mode;
   pendingSelection: ThemeSelection | null;
+  editing: boolean;
   selectionSlow: boolean;
   selectionFailed: boolean;
   onPick: (themeId: string, mode: Mode) => void;
@@ -1462,9 +1804,12 @@ function ThemePicker({
       }
     : diskSwatch;
   const pending = pendingSelection !== null;
+  const unavailable = pending || editing;
   const loading = catalog.themes.length === 0;
   const accessibleName = loading
     ? "Loading themes"
+    : editing
+    ? `Saving ${current?.name ?? "theme"}`
     : pending
     ? `${selectionSlow ? "Still applying" : "Applying"} ${current?.name ?? "theme"} ${displayMode}`
     : `${current?.name ?? "Theme"} ${displayMode}`;
@@ -1478,9 +1823,9 @@ function ThemePicker({
         >
           <SelectTrigger
             data-tp-theme-control=""
-            aria-busy={pending}
+            aria-busy={unavailable}
             aria-label={accessibleName}
-            disabled={pending || loading}
+            disabled={unavailable || loading}
             className="h-8 w-auto min-w-36 max-w-52 gap-2 text-sm"
           >
             <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
@@ -1500,7 +1845,7 @@ function ThemePicker({
         </Select>
         <ModeSwitch
           mode={displayMode}
-          disabled={pending || loading}
+          disabled={unavailable || loading}
           onPick={(next) => { if (current) onPick(current.id, next); }}
         />
       </div>
@@ -1565,8 +1910,11 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const [pendingSelection, setPendingSelection] = useState<ThemeSelection | null>(null);
   const [failedSelection, setFailedSelection] = useState<ThemeSelection | null>(null);
   const [selectionSlow, setSelectionSlow] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editResetRevision, setEditResetRevision] = useState(0);
   const catalogRequests = useRef(new LatestRequest());
   const selectionPending = useRef(false);
+  const editingPending = useRef(false);
   const catalogLoadPending = useRef(false);
   const catalogLoadQueued = useRef(false);
 
@@ -1582,7 +1930,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      if (selectionPending.current || catalogLoadPending.current) {
+      if (selectionPending.current || editingPending.current || catalogLoadPending.current) {
         catalogLoadQueued.current = true;
         return;
       }
@@ -1682,6 +2030,40 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const pick = (themeId: string, nextMode: Mode) => applySelection({ themeId, mode: nextMode });
   const retrySelection = () => { if (failedSelection) applySelection(failedSelection); };
 
+  const commitEdit = (edit: ThemeEdit) => {
+    const themeId = catalog.activeThemeId;
+    if (!themeId || selectionPending.current || editingPending.current) return;
+    editingPending.current = true;
+    setEditBusy(true);
+    setError(null);
+    const request = catalogRequests.current.begin();
+    withRpcTimeout(rpc.call("editTheme", { themeId, mode, edit }), "Theme edit")
+      .then((result) => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        commitCatalog(result.catalog, setCatalog);
+        if (result.forkedFrom) {
+          const copy = result.catalog.themes.find((theme) => theme.id === result.themeId);
+          const source = catalog.themes.find((theme) => theme.id === result.forkedFrom);
+          const copyName = copy?.name ?? "theme copy";
+          const sourceName = source?.name ?? "The source theme";
+          toast.success(`Created ${copyName}`, {
+            description: `Now editing ${copyName}. ${sourceName} is unchanged.`,
+          });
+        }
+      })
+      .catch((cause) => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        setEditResetRevision((current) => current + 1);
+        toast.error("Theme edit failed", { description: cause instanceof Error ? cause.message : String(cause) });
+      })
+      .finally(() => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        editingPending.current = false;
+        setEditBusy(false);
+        if (catalogLoadQueued.current) loadRef.current();
+      });
+  };
+
   const revision = `${mode}:${catalog.activeThemeId ?? ""}:${catalog.revision}`;
   const computed = useComputedTokens(ALL_TOKENS, revision);
   const radii = useResolvedRadii(revision);
@@ -1692,7 +2074,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const displayThemeName = catalog.themes.find((theme) => theme.id === displayThemeId)?.name ?? "Current theme";
 
   return (
-    <div ref={rootRef} data-tp-root data-tp-band={layout.band} style={{ height: "100%", overflowY: "auto", overflowX: "hidden", background: v("canvas", v("background")), color: v("foreground"), fontFamily: SANS }}>
+    <div ref={rootRef} data-tp-root data-tp-band={layout.band} style={{ height: "100%", overflowY: "auto", overflowX: "hidden", background: v("canvas", v("background")), color: v("foreground"), fontFamily: SANS, letterSpacing: v("tracking-normal", "0em") }}>
       <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 20, borderBottom: `1px solid ${v("border-seam", v("border"))}`, background: v("canvas", v("background")) }}>
         <div data-tp-header-inner="" style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: space(2), gap: space(2), padding: `${space(2)} ${contentInset}px` }}>
           <Tabs value={view} onValueChange={(next) => navigate.toPluginPanel("preview", { subPath: next })}>
@@ -1712,6 +2094,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
               computed={computed}
               mode={mode}
               pendingSelection={pendingSelection}
+              editing={editBusy}
               selectionSlow={selectionSlow}
               selectionFailed={failedSelection !== null}
               onPick={pick}
@@ -1763,7 +2146,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
               the interaction surfaces are never lost — only restacked. */}
           {area === "overlays" ? <StageRail withOverlayHeading={false} />
             : area === "components" ? <ComponentsSection />
-            : <StyleSheetSection computed={computed} radii={radii} />}
+            : <StyleSheetSection computed={computed} radii={radii} mode={mode} busy={editBusy} resetRevision={editResetRevision} onCommit={commitEdit} />}
         </div>
       ))}
       <div style={{ height: space(8) }} />

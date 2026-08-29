@@ -46,13 +46,28 @@ export const FIXTURE_ANCHORS: readonly FixtureAnchor[] = [
       // Accents and states.
       "--primary:", "--file-accent:", "--timeline-accent:", "--surface-selected:", "--state-hover:", "--state-active:",
       // Status.
-      "--success:", "--warning:", "--destructive:", "--pr-merged:", "--diff-added:", "--diff-removed:",
+      "--success:", "--warning:", "--attention:", "--destructive:", "--pr-merged:", "--diff-added:", "--diff-removed:",
       // Lines and focus.
       "--border:", "--border-hairline:", "--border-seam:", "--sidebar-border:", "--input:", "--ring:",
+      // Type, rhythm, shape, and elevation controls.
+      "--font-sans:", "--font-mono:", "--text-2xs:", "--text-xs:", "--text-sm:", "--text-base:",
+      "--spacing:", "--tracking-normal:", "--bb-sidebar-row-height:", "--icon-stroke-width:", "--radius:",
+      "--shadow-x:", "--shadow-y:", "--shadow-blur:", "--shadow-spread:", "--shadow-color:", "--shadow-opacity:",
       // The open-in-split row surface a theme may override.
       "--bb-sidebar-open-in-split-background",
     ],
     because: "Every token the preview reads and lists must still be declared by the app's theme source of truth.",
+  },
+  {
+    file: "apps/app/src/components/thread/toc/ThreadTableOfContents.tsx",
+    mustContain: [
+      'aria-label="Thread table of contents"',
+      'label="Agent messages"',
+      'label="Your messages"',
+      "bg-popover",
+    ],
+    because:
+      "The held-open fixture keeps the thread table-of-contents rail, two message-role tabs, and popover surface aligned with bb's real thread overlay.",
   },
   {
     file: "apps/app/src/hooks/useTheme.ts",

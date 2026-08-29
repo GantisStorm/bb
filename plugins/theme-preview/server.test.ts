@@ -1,16 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import plugin, { buildCatalog, classifySelector, createCatalogLoader, parseThemeSwatches } from "./server";
+import type { ThemeEditInput } from "./theme-editor";
 
 describe("classifySelector", () => {
   it("accepts the mode roots and rejects element-scoped blocks", () => {
     expect(classifySelector(":root, .light")).toBe("shared");
     expect(classifySelector(":root")).toBe("shared");
     expect(classifySelector(":root:not(.dark)")).toBe("light");
+    expect(classifySelector(":root:not(.dark), .light:not(.dark)")).toBe("light");
     expect(classifySelector(".dark")).toBe("dark");
     expect(classifySelector(".dark .fixed.bg-sidebar")).toBeNull();
     expect(classifySelector("code:not(pre code)")).toBeNull();
@@ -34,6 +36,16 @@ describe("parseThemeSwatches", () => {
     expect(dark?.primary).toBe("#ffffff");
     // the element-scoped override describes one surface, not the palette
     expect(dark?.sidebar).toBe("#0a0a0a");
+  });
+
+  it("keeps managed light overrides out of the dark swatch", () => {
+    const parsed = parseThemeSwatches(`
+      :root, .light { --canvas: #eeeeee; }
+      .dark { --canvas: #222222; }
+      :root:not(.dark), .light:not(.dark) { --canvas: #fefefe; }
+    `);
+    expect(parsed.light?.canvas).toBe("#fefefe");
+    expect(parsed.dark?.canvas).toBe("#222222");
   });
 
   it("falls back across token candidates and overlays the base palette", () => {
@@ -326,6 +338,81 @@ describe("theme watcher", () => {
   });
 });
 
+describe("editTheme RPC", () => {
+  it("forks a built-in, selects the durable custom theme, and returns its refreshed catalog", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "theme-preview-rpc-"));
+    let activeThemeId = "default";
+    const setCalls: string[] = [];
+    let handlers!: {
+      editTheme(input: ThemeEditInput): Promise<{
+        catalog: { activeThemeId: string | null; themes: Array<{ id: string; source: string }> };
+        themeId: string;
+        forkedFrom: string | null;
+      }>;
+    };
+    const bb = {
+      background: { service() {} },
+      sdk: {
+        theme: {
+          catalog: async () => {
+            const entries = await readdir(directory, { withFileTypes: true });
+            return {
+              active: { themeId: activeThemeId },
+              custom: entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+              plugins: [],
+              dir: directory,
+            };
+          },
+          set: async (themeId: string) => {
+            setCalls.push(themeId);
+            activeThemeId = themeId;
+          },
+        },
+        plugins: { list: async () => ({ plugins: [] }) },
+      },
+      rpc: {
+        register(_contract: unknown, registered: typeof handlers) {
+          handlers = registered;
+        },
+      },
+      log: { info() {}, warn() {} },
+    } as unknown as BbPluginApi;
+
+    try {
+      await plugin(bb);
+      const result = await handlers.editTheme({
+        themeId: "default",
+        mode: "light",
+        edit: {
+          kind: "colors",
+          family: "primary",
+          canvas: "#ffffff",
+          ink: "#222222",
+          sidebar: "#f8f8f8",
+          sidebarForeground: "#222222",
+          primary: "#2255cc",
+          timelineAccent: "#3366dd",
+          success: "#238636",
+          warning: "#b26a00",
+          attention: "#c69000",
+          destructive: "#cf222e",
+          prMerged: "#8250df",
+        },
+      });
+
+      expect(result.themeId).toBe("default-copy");
+      expect(result.forkedFrom).toBe("default");
+      expect(result.catalog.activeThemeId).toBe("default-copy");
+      expect(result.catalog.themes.find((theme) => theme.id === "default-copy")?.source).toBe("custom");
+      expect(setCalls).toEqual(["default-copy"]);
+      expect(await readFile(join(directory, "default-copy", "theme.css"), "utf8"))
+        .toContain("--primary: #2255cc;");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("comments", () => {
   it("does not let a commented selector swallow the block after it", () => {
     const css = `/* .dark .fixed.bg-sidebar { --sidebar: #000; } */ :root { --canvas: #f4f4f4; }`;
@@ -345,6 +432,7 @@ describe("buildCatalog", () => {
     );
     expect(out.activeThemeId).toBe("default");
     expect(out.themes.map((t) => t.id).slice(0, 3)).toEqual(["endless", "plugin:endless:endless-color", "default"]);
+    expect(out.themes.map((t) => t.source).slice(0, 3)).toEqual(["custom", "plugin", "builtin"]);
     // bundled palettes carry swatches extracted from bb's source
     const nord = out.themes.find((t) => t.id === "nord");
     expect(nord?.dark?.primary).toBe("#88c0d0");
@@ -352,5 +440,15 @@ describe("buildCatalog", () => {
     expect(out.themes[0].light?.canvas).toBe("#f4f4f4");
     expect(out.themes[1].light).toBeNull();
     expect(out.revision).toBe(0);
+  });
+
+  it("uses the durable fork label embedded by Theme Preview", async () => {
+    const encodedName = Buffer.from("Nord copy", "utf8").toString("base64url");
+    const out = await buildCatalog(
+      { active: { themeId: "nord-copy" }, custom: ["nord-copy"], plugins: [] },
+      async () => `:root { --canvas: #eceff4; }\n/* theme-preview:fork-name:${encodedName} */\n`,
+    );
+
+    expect(out.themes.find((theme) => theme.id === "nord-copy")?.name).toBe("Nord copy");
   });
 });

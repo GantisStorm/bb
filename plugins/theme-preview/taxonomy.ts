@@ -7,12 +7,12 @@
  *
  * 1. `mock`       — the mock bb app surface, with toggles between views.
  *                   Judges tokens in real product composition.
- * 2. `stylesheet` — the color/type/radius specimen sheet. Every entry is one
- *                   discrete, targetable element (`data-tp-specimen`) so a
- *                   future version can turn each into an interactive control
- *                   (color → picker, font → picker, radius → editor) without
- *                   restructuring. This version stays read-only.
- * 3. `components` — static component specimens whose theming shows at rest.
+ * 2. `stylesheet` — the compact live theme editor. Direct values are real bb
+ *                   controls (`data-tp-specimen`); the larger token families
+ *                   they produce stay inspectable in a collapsed, read-only
+ *                   derived-values section.
+ * 3. `components` — live component specimens for hover, focus, pressed,
+ *                   checked, editable, and disabled states.
  * 4. `overlays`   — components whose theming only shows under interaction
  *                   (menus, dialogs, popovers, tooltips, hover cards, toasts).
  *
@@ -36,42 +36,57 @@ export const AREA_TITLES: Record<AreaId, string> = {
 // ---------------------------------------------------------------------------
 
 export const MOCK_VIEWS = [
-  { id: "thread", label: "Thread", exercises: "sidebar row states + scoped overrides, bubbles on surface-recessed, seam/hairline borders, diff washes, file/timeline accents, verification badges, composer ring, primary send" },
+  { id: "thread", label: "Thread", exercises: "sidebar row states + scoped overrides, held-open table-of-contents popover, bubbles on surface-recessed, seam/hairline borders, diff washes, file/timeline accents, verification badges, composer ring, primary send" },
   { id: "new", label: "New thread", exercises: "empty state, focused composer ring, suggestion chips" },
   { id: "split", label: "Split", exercises: "pane seam, active-pane primary marker, two distinct transcripts" },
   { id: "settings", label: "Settings", exercises: "appearance rows mirroring the live selection, secondary→accent hero gradient, tab underline, cards + switches" },
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 2 — Style sheet. Discrete, targetable specimens.
+// Area 2 — Style sheet. Direct controls plus read-only derived families.
 // `data-tp-specimen` values are `<kind>:<id>` from these tables.
 // ---------------------------------------------------------------------------
 
-/** Color groups; `contrast` names the measurement policy for the ratio column. */
+/** The active mode's directly editable colour controls. */
+export const DIRECT_COLOR_CONTROLS = [
+  { id: "canvas", label: "Canvas", token: "canvas", family: "anchors" },
+  { id: "ink", label: "Ink", token: "ink", family: "anchors" },
+  { id: "sidebar", label: "Sidebar", token: "sidebar", family: "sidebar" },
+  { id: "sidebar-foreground", label: "Sidebar ink", token: "sidebar-foreground", family: "sidebar" },
+  { id: "primary", label: "Primary", token: "primary", family: "primary" },
+  { id: "timeline-accent", label: "Timeline / files", token: "timeline-accent", family: "timeline" },
+  { id: "success", label: "Success", token: "success", family: "status" },
+  { id: "warning", label: "Warning", token: "warning", family: "status" },
+  { id: "attention", label: "Attention / pending", token: "attention", family: "status" },
+  { id: "destructive", label: "Destructive", token: "destructive", family: "status" },
+  { id: "pr-merged", label: "Merged", token: "pr-merged", family: "status" },
+] as const;
+
+/** Read-only colour groups; `contrast` names the measurement policy. */
 export const COLOR_GROUPS = [
   {
     id: "surfaces",
     title: "Surfaces",
     contrast: "none",
-    tokens: ["canvas", "sidebar", "card", "popover", "secondary", "muted", "surface-recessed-solid", "surface-scrim"],
+    tokens: ["card", "popover", "secondary", "muted", "surface-recessed-solid", "surface-scrim"],
   },
   {
     id: "ink",
     title: "Ink",
     contrast: "vs-surface", // each ink on the surface it sits on; 4.5:1 floor
-    tokens: ["foreground", "muted-foreground", "subtle-foreground", "readback-foreground", "sidebar-foreground"],
+    tokens: ["foreground", "muted-foreground", "subtle-foreground", "readback-foreground"],
   },
   {
     id: "accent",
     title: "Accent",
     contrast: "none",
-    tokens: ["primary", "file-accent", "timeline-accent", "surface-selected", "state-hover", "state-active"],
+    tokens: ["file-accent", "surface-selected", "state-hover", "state-active"],
   },
   {
     id: "status",
     title: "Status",
     contrast: "as-painted", // text token on its 15%/18% wash over canvas
-    tokens: ["success", "warning", "destructive", "pr-merged", "diff-added", "diff-removed"],
+    tokens: ["success-foreground", "warning-text", "destructive-text", "surface-attention", "diff-added", "diff-removed"],
   },
   {
     id: "lines",
@@ -81,23 +96,24 @@ export const COLOR_GROUPS = [
   },
 ] as const;
 
-/** Typography specimens: one targetable entry per themable font role. */
+/** Typography controls and their live derived samples. */
 export const TYPE_SPECIMENS = [
-  { id: "font-sans", title: "Sans", token: "font-sans", sample: "Body at 13.5 — the thing most pixels are." },
-  { id: "font-sans-strong", title: "Sans · 600", token: "font-sans", sample: "Title · foreground 600" },
-  { id: "font-mono", title: "Mono", token: "font-mono", sample: "path/file.tsx · --token" },
+  { id: "font-sans", title: "Sans", token: "font-sans" },
+  { id: "font-mono", title: "Mono", token: "font-mono" },
+  { id: "text-scale", title: "Text scale", token: "tp-text-scale" },
+  { id: "line-height", title: "Line height", token: "tp-line-height" },
 ] as const;
 
-/** Radius specimens: the theme's derived ladder plus bb's measured shapes. */
+/** Radius specimens: one direct base plus the derived ladder. */
 export const RADIUS_SPECIMENS = [
-  { id: "radius", title: "radius", source: "var(--radius)" },
-  { id: "radius-md", title: "radius-md", source: "var(--radius-md)" },
-  { id: "radius-row", title: "row · 10", source: "10px" },
-  { id: "radius-bubble", title: "bubble · 16", source: "16px" },
+  { id: "radius-sm", title: "Small", source: "var(--radius-sm)" },
+  { id: "radius-md", title: "Medium", source: "var(--radius-md)" },
+  { id: "radius-lg", title: "Large", source: "var(--radius-lg)" },
+  { id: "radius-xl", title: "Extra large", source: "var(--radius-xl)" },
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 3 — Static components (all vendored @bb/shared-ui, never lookalikes).
+// Area 3 — Live components (all vendored @bb/shared-ui, never lookalikes).
 // ---------------------------------------------------------------------------
 
 export const COMPONENT_SPECIMENS = [
@@ -107,18 +123,6 @@ export const COMPONENT_SPECIMENS = [
   { id: "switch", title: "Switch", vendored: "@bb/shared-ui/switch" },
   { id: "checkbox", title: "Checkbox", vendored: "@bb/shared-ui/checkbox" },
 ] as const;
-
-/**
- * The thread list (bb's sidebar rows) is a component specimen, but it is the
- * thing the sidebar surface tokens paint, so it is anchored in the style
- * sheet beside them rather than floating in the components area.
- */
-export const THREAD_LIST_SPECIMEN = {
-  id: "thread-list",
-  title: "Thread list",
-  states: ["Unread", "Hovered", "Open", "Open in split"],
-  vendored: "real sidebar row classes (fixture)",
-} as const;
 
 // ---------------------------------------------------------------------------
 // Area 4 — Interactive overlays (all vendored; opened deliberately, one at a
@@ -137,7 +141,17 @@ export const OVERLAY_SPECIMENS = [
 
 /** Every `data-tp-specimen` value the style sheet must render. */
 export const STYLESHEET_SPECIMEN_IDS: readonly string[] = [
-  ...COLOR_GROUPS.flatMap((group) => group.tokens.map((token) => `color:${token}`)),
+  ...DIRECT_COLOR_CONTROLS.map((control) => `color:${control.id}`),
   ...TYPE_SPECIMENS.map((specimen) => `type:${specimen.id}`),
-  ...RADIUS_SPECIMENS.map((specimen) => `radius:${specimen.id}`),
+  "rhythm:density",
+  "rhythm:tracking",
+  "rhythm:row-height",
+  "rhythm:icon-stroke",
+  "radius:base",
+  "shadow:y",
+  "shadow:blur",
+  "shadow:x",
+  "shadow:spread",
+  "shadow:color",
+  "shadow:opacity",
 ];
