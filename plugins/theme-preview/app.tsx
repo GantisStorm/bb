@@ -714,38 +714,62 @@ function resolveColor(color: string): { rgb: string; hex: string } {
 
 function useComputedTokens(names: readonly string[], revision: string): Computed {
   const [out, setOut] = useState<Computed>({});
+  const acceptedFingerprint = useRef<string | null>(null);
   useEffect(() => {
-    // Re-read on every theme/mode change (revision) — a beat later, because the
-    // theme CSS lands asynchronously after the rpc response.
-    const timer = setTimeout(() => {
-    const rootStyle = getComputedStyle(document.documentElement);
-    const probe = document.createElement("div");
-    probe.className = "fixed bg-sidebar";
-    probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:0;height:0;pointer-events:none";
-    document.body.appendChild(probe);
-    const sidebarStyle = getComputedStyle(probe);
-    const swatch = document.createElement("span");
-    swatch.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px";
-    document.body.appendChild(swatch);
-    const next: Computed = {};
-    for (const name of names) {
-      const value = rootStyle.getPropertyValue(`--${name}`).trim();
-      const scoped = sidebarStyle.getPropertyValue(`--${name}`).trim();
-      swatch.style.backgroundColor = "";
-      swatch.style.backgroundColor = `var(--${name})`;
-      const resolved = value ? resolveColor(getComputedStyle(swatch).backgroundColor) : { rgb: "", hex: "—" };
-      next[name] = {
-        value,
-        hex: resolved.hex,
-        rgb: resolved.rgb,
-        sidebar: scoped && scoped !== value ? scoped : null,
-      };
-    }
-    probe.remove();
-    swatch.remove();
-    setOut(next);
-    }, 350);
-    return () => clearTimeout(timer);
+    // The active stylesheet is swapped asynchronously after the RPC response.
+    // Keep optimistic editor values in place until a changed token set has
+    // settled for two reads; accepting the previous sheet makes a successful
+    // slider edit visibly snap back before repainting again.
+    const previousFingerprint = acceptedFingerprint.current;
+    const deadline = Date.now() + 4_000;
+    let candidateFingerprint: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => {
+      const rootStyle = getComputedStyle(document.documentElement);
+      const values = names.map((name) => rootStyle.getPropertyValue(`--${name}`).trim());
+      const fingerprint = values.join("\u0001");
+      if (previousFingerprint !== null && Date.now() < deadline) {
+        if (fingerprint === previousFingerprint) {
+          candidateFingerprint = null;
+          timer = setTimeout(read, 100);
+          return;
+        }
+        if (candidateFingerprint !== fingerprint) {
+          candidateFingerprint = fingerprint;
+          timer = setTimeout(read, 100);
+          return;
+        }
+      }
+
+      const probe = document.createElement("div");
+      probe.className = "fixed bg-sidebar";
+      probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:0;height:0;pointer-events:none";
+      document.body.appendChild(probe);
+      const sidebarStyle = getComputedStyle(probe);
+      const swatch = document.createElement("span");
+      swatch.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px";
+      document.body.appendChild(swatch);
+      const next: Computed = {};
+      for (const [index, name] of names.entries()) {
+        const value = values[index] ?? "";
+        const scoped = sidebarStyle.getPropertyValue(`--${name}`).trim();
+        swatch.style.backgroundColor = "";
+        swatch.style.backgroundColor = `var(--${name})`;
+        const resolved = value ? resolveColor(getComputedStyle(swatch).backgroundColor) : { rgb: "", hex: "—" };
+        next[name] = {
+          value,
+          hex: resolved.hex,
+          rgb: resolved.rgb,
+          sidebar: scoped && scoped !== value ? scoped : null,
+        };
+      }
+      probe.remove();
+      swatch.remove();
+      acceptedFingerprint.current = fingerprint;
+      setOut(next);
+    };
+    timer = setTimeout(read, previousFingerprint === null ? 350 : 0);
+    return () => { if (timer !== undefined) clearTimeout(timer); };
   }, [names, revision]);
   return out;
 }
@@ -1547,9 +1571,13 @@ function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommi
 }) {
   const [values, setValues] = useState<EditorValues>(DEFAULT_EDITOR_VALUES);
   const ready = Boolean(computed.canvas?.value && computed.ink?.value);
+  const radiiRef = useRef(radii);
+  radiiRef.current = radii;
   useEffect(() => {
-    if (ready) setValues(valuesFromComputed(computed, radii));
-  }, [computed, radii, ready, resetRevision]);
+    if (ready) setValues(valuesFromComputed(computed, radiiRef.current));
+    // Resolved radius specimens update on their own timer. Their identity is
+    // not an editor-value revision and must not overwrite an optimistic edit.
+  }, [computed, ready, resetRevision]);
   const disabled = busy || !ready;
   const setTypography = (typography: TypographyValues) => setValues((current) => ({ ...current, typography }));
   const setRhythm = (rhythm: RhythmValues) => setValues((current) => ({ ...current, rhythm }));

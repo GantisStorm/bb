@@ -372,7 +372,7 @@ describe("Theme Preview", () => {
     });
   });
 
-  it("normalizes formatted CSS font stacks before a slider edit is persisted", async () => {
+  it("normalizes formatted CSS font stacks and keeps a slider edit while the stylesheet catches up", async () => {
     const root = document.documentElement.style;
     const previous = root.getPropertyValue("--font-mono");
     root.setProperty("--font-mono", 'ui-monospace, Menlo,\n  "Courier New", monospace');
@@ -383,7 +383,7 @@ describe("Theme Preview", () => {
         setTheme: () => DEFAULT_CATALOG,
         editTheme: (input) => {
           edits.push(input);
-          return { catalog: DEFAULT_CATALOG, themeId: "default", forkedFrom: null };
+          return { catalog: { ...DEFAULT_CATALOG, revision: 1 }, themeId: "default", forkedFrom: null };
         },
       });
 
@@ -400,6 +400,8 @@ describe("Theme Preview", () => {
         fontMono: 'ui-monospace, Menlo, "Courier New", monospace',
         textScale: 1.01,
       });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(slider.getAttribute("aria-valuenow")).toBe("1.01");
     } finally {
       root.setProperty("--font-mono", previous);
     }
