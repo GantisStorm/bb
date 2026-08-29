@@ -575,7 +575,7 @@ export function createApp(
     // settings save must reach the next listing, not the cached answer.
     onSettingsChanged: (pluginId) =>
       deps.providerNativeRoots.invalidate(pluginId),
-    // Disabling or uninstalling a plugin must never strand work it parked: the
+    // Disabling or uninstalling a plugin must never strand work it queued: the
     // waits it holds clear now rather than on the next sweep.
     onPluginUnregistered: (pluginId) => {
       void clearQueueWaitsForUnregisteredPlugin(deps, pluginId).catch(
@@ -595,14 +595,14 @@ export function createApp(
     watchBuiltinPluginSources:
       process.env.BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD === "1",
   });
-  // Messages parked while a thread awaited user interaction stop waiting once
+  // Messages queued while a thread awaited user interaction stop waiting once
   // that interaction settles (#1650); the idle drain then delivers them.
   deps.pendingInteractions.setThreadInteractionSettledListener((threadId) => {
     requestThreadQueueDrainForSettledInteraction(deps, threadId);
   });
   setPluginThreadEventEmitter(pluginService.events);
   // Bridge "a thread stopped running" to the queue: a freed slot re-attempts
-  // every plugin-parked row, which is how a limiter's waits clear without the
+  // every plugin-queued row, which is how a limiter's waits clear without the
   // plugin tracking capacity itself.
   setFreedThreadCapacityListener(() => {
     requestFreedCapacityQueueDrain(deps);
