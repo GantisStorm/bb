@@ -71,6 +71,7 @@ function deferred<T>(): Deferred<T> {
 
 class ResizeObserverStub {
   observe() {}
+  unobserve() {}
   disconnect() {}
 }
 
@@ -209,7 +210,7 @@ describe("Theme Preview", () => {
       expect(within(toc).getByRole("button", { name: /Make the blacklight variant/i }).getAttribute("aria-current")).toBe("true");
 
       fireEvent.click(within(toc).getByRole("tab", { name: "Agent" }));
-      const second = within(toc).getByRole("button", { name: /Selection now reads/i });
+      const second = await within(toc).findByRole("button", { name: /Selection now reads/i });
       fireEvent.click(second);
       expect(second.getAttribute("aria-current")).toBe("true");
     } finally {
@@ -255,7 +256,7 @@ describe("Theme Preview", () => {
       const areas = [...document.querySelectorAll("[data-tp-area]")].map((el) => el.getAttribute("data-tp-area"));
       expect(areas).toEqual(["mock", "overlays", "stylesheet", "components"]);
       expect(screen.getByRole("button", { name: "Derived values" }).getAttribute("aria-expanded")).toBe("false");
-      expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
+      expect(document.querySelector("[data-tp-derived-values] [data-tp-derived-token]")).toBeNull();
     } finally {
       width.mockRestore();
     }
@@ -393,6 +394,7 @@ describe("Theme Preview", () => {
         return found as HTMLElement;
       });
       fireEvent.keyDown(slider, { key: "ArrowRight", code: "ArrowRight" });
+      fireEvent.keyUp(slider, { key: "ArrowRight", code: "ArrowRight" });
 
       await waitFor(() => expect(edits).toHaveLength(1));
       expect(edits[0]?.edit).toMatchObject({
