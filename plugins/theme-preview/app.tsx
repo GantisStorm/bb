@@ -1594,7 +1594,7 @@ function ComponentsSection() {
   const compactBlock = (wide = false): CSSProperties => ({ minWidth: 0, gridColumn: wide ? "1 / -1" : undefined });
   const compactLabel: CSSProperties = { ...TEXT_LABEL, minWidth: 0, fontSize: 11.5, lineHeight: "16px" };
   return (
-    <div data-tp-components="" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(116px, 1fr))", columnGap: 10, rowGap: 14 }}>
+    <div data-tp-components="" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", columnGap: 4, rowGap: 14 }}>
       <div data-tp-block="buttons" style={compactBlock(true)}>
         <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Buttons</h3>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 4 }}>
