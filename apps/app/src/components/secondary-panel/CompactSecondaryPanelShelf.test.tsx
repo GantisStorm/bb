@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactSecondaryPanelShelf } from "./CompactSecondaryPanelShelf";
+import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
 import {
   getCompactSecondaryPanelPresentation,
   isCompactSecondaryPanelShelfShowing,
@@ -39,7 +40,7 @@ describe("CompactSecondaryPanelShelf", () => {
     const shelf = screen.getByTestId("secondary-panel-shelf");
     expect(shelf.className).toContain("right-0");
     expect(shelf.className).toContain("inset-y-0");
-    expect(shelf.className).toContain("z-0");
+    expect(shelf.style.zIndex).toBe(String(APP_OVERLAY_LAYER.secondaryPanel));
     expect(shelf.className).toContain("w-(--secondary-panel-width-mobile)");
     expect(shelf.className).not.toContain("bottom-0");
   });
@@ -69,9 +70,15 @@ describe("CompactSecondaryPanelShelf", () => {
     renderShelf(true, "full");
 
     const shelf = screen.getByTestId("secondary-panel-shelf");
-    expect(shelf.className).toContain("z-0");
-    expect(shelf.className).toContain("data-[state=full]:z-[45]");
-    expect(shelf.className).not.toContain("data-[state=full]:z-50");
+    expect(shelf.style.zIndex).toBe(
+      String(APP_OVERLAY_LAYER.secondaryPanelFullPage),
+    );
+    expect(APP_OVERLAY_LAYER.secondaryPanelFullPage).toBeGreaterThan(
+      APP_OVERLAY_LAYER.sidebarTrigger,
+    );
+    expect(APP_OVERLAY_LAYER.sharedPortaledOverlay).toBeGreaterThan(
+      APP_OVERLAY_LAYER.secondaryPanelFullPage,
+    );
   });
 
   it("stops the dismiss layer from swallowing taps once the panel is full page", () => {
@@ -88,6 +95,12 @@ describe("CompactSecondaryPanelShelf", () => {
     const { onClose } = renderShelf(true);
 
     const dismiss = screen.getByTestId("secondary-panel-shelf-dismiss");
+    expect(dismiss.style.zIndex).toBe(
+      String(APP_OVERLAY_LAYER.secondaryPanelDismiss),
+    );
+    expect(APP_OVERLAY_LAYER.sidebarTrigger).toBeGreaterThan(
+      APP_OVERLAY_LAYER.secondaryPanelDismiss,
+    );
     expect(dismiss.className).toContain("bg-transparent");
     expect(dismiss.className).toContain(
       "data-[state=shelf]:-translate-x-(--secondary-panel-width-mobile)",

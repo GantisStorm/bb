@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppLayout } from "./AppLayout";
+import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
 
 const viewportState = vi.hoisted(() => ({ compact: false }));
 
@@ -184,12 +185,19 @@ describe("AppLayout plugin panel header", () => {
     expect(screen.queryByTestId("app-page-header")).toBeNull();
   });
 
-  it("keeps fixed app chrome below full-page tool surfaces", () => {
+  it("keeps the sidebar trigger above a shelf dismiss layer but below a full page", () => {
     viewportState.compact = true;
     renderPluginPanelRoute();
 
     const trigger = screen.getByTestId("app-sidebar-trigger-overlay");
-    expect(trigger.className).toContain("z-40");
-    expect(trigger.className).not.toContain("z-50");
+    expect(trigger.style.zIndex).toBe(
+      String(APP_OVERLAY_LAYER.sidebarTrigger),
+    );
+    expect(APP_OVERLAY_LAYER.sidebarTrigger).toBeGreaterThan(
+      APP_OVERLAY_LAYER.secondaryPanelDismiss,
+    );
+    expect(APP_OVERLAY_LAYER.secondaryPanelFullPage).toBeGreaterThan(
+      APP_OVERLAY_LAYER.sidebarTrigger,
+    );
   });
 });
