@@ -85,6 +85,7 @@ function deferred<T>(): Deferred<T> {
 
 class ResizeObserverStub {
   observe() {}
+  unobserve() {}
   disconnect() {}
 }
 
@@ -232,8 +233,8 @@ describe("Theme Preview", () => {
       expect(within(toc).getByRole("tab", { name: "You" }).getAttribute("aria-selected")).toBe("true");
       expect(within(toc).getByRole("button", { name: /Make the blacklight variant/i }).getAttribute("aria-current")).toBe("true");
 
-      fireEvent.click(within(toc).getByRole("tab", { name: "Agent" }));
-      const second = within(toc).getByRole("button", { name: /Selection now reads/i });
+      fireEvent.mouseDown(within(toc).getByRole("tab", { name: "Agent" }));
+      const second = await within(toc).findByRole("button", { name: /Selection now reads/i });
       fireEvent.click(second);
       expect(second.getAttribute("aria-current")).toBe("true");
     } finally {
@@ -411,6 +412,7 @@ describe("Theme Preview", () => {
       const input = await waitFor(() => {
         const found = screen.getByLabelText("Shadow color") as HTMLInputElement;
         expect(found.disabled).toBe(false);
+        expect(found.value).toBe("#222222");
         return found;
       });
       expect(input.value).toBe("#222222");
@@ -441,6 +443,8 @@ describe("Theme Preview", () => {
       const input = screen.getByLabelText("Canvas color") as HTMLInputElement;
       expect(input.disabled).toBe(false);
       expect(input.value).toBe("#ffffff");
+      expect((screen.getByLabelText("Ink color") as HTMLInputElement).value).toBe("#222222");
+      expect((screen.getByLabelText("Sidebar color") as HTMLInputElement).value).toBe("#f5f5f5");
       return input;
     });
 
@@ -501,6 +505,53 @@ describe("Theme Preview", () => {
     expect(await screen.findByRole("combobox", { name: /Default light/i })).toBeDefined();
     expect(screen.queryByRole("button", { name: /Theme copy created/i })).toBeNull();
     expect(document.querySelector("[data-tp-fork-status]")?.textContent).toContain("Removed Default copy. Restored Default.");
+  });
+
+  it("normalizes formatted CSS font stacks and keeps a slider edit while the stylesheet catches up", async () => {
+    const root = document.documentElement.style;
+    const previous = root.getPropertyValue("--font-mono");
+    root.setProperty("--font-mono", 'ui-monospace, Menlo,\n  "Courier New", monospace');
+    const edits: Parameters<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>[0][] = [];
+    try {
+      renderPreview({
+        themeCatalog: () => DEFAULT_CATALOG,
+        setTheme: () => DEFAULT_CATALOG,
+        editTheme: (input) => {
+          edits.push(input);
+          return {
+            catalog: { ...DEFAULT_CATALOG, revision: 1 },
+            themeId: "default",
+            forkedFrom: null,
+            undoToken: null,
+            committedEdit: input.edit,
+            adjustments: [],
+            links: LINKED,
+          };
+        },
+      });
+
+      const slider = await waitFor(() => {
+        const found = document.querySelector<HTMLElement>('[data-tp-specimen="type:text-scale"] [role="slider"]');
+        expect(found).not.toBeNull();
+        expect(found?.hasAttribute("data-disabled")).toBe(false);
+        expect(found?.getAttribute("aria-valuenow")).toBe("1");
+        return found as HTMLElement;
+      });
+      slider.focus();
+      fireEvent.keyDown(slider, { key: "ArrowRight", code: "ArrowRight" });
+      fireEvent.keyUp(slider, { key: "ArrowRight", code: "ArrowRight" });
+
+      await waitFor(() => expect(edits).toHaveLength(1));
+      expect(edits[0]?.edit).toMatchObject({
+        kind: "typography",
+        fontMono: 'ui-monospace, Menlo, "Courier New", monospace',
+        textScale: 1.01,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(slider.getAttribute("aria-valuenow")).toBe("1.01");
+    } finally {
+      root.setProperty("--font-mono", previous);
+    }
   });
 
   it("rolls back only the failed control and retries the same edit inline", async () => {

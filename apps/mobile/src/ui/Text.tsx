@@ -1,33 +1,32 @@
 import { cva, type VariantProps } from "class-variance-authority";
-import { Text as RNText, type TextProps as RNTextProps } from "react-native";
+import {
+  Text as RNText,
+  type TextProps as RNTextProps,
+  type TextStyle,
+} from "react-native";
 import { resolveFont, type FontWeightName } from "@/theme/fonts";
 import { cn } from "./cn";
 
-/**
- * Typography roles. Sizes are the touch scale from theme.css (`--text-*`
- * under `pointer: coarse`): 2xs 11, xs 14, sm 15, base 16 (see global.css).
- */
+const IS_IOS = process.env.EXPO_OS === "ios";
+
+const SECTION_LABEL_CLASS = IS_IOS
+  ? "text-xs text-muted-foreground"
+  : "text-xs font-medium uppercase tracking-wide text-subtle-foreground/75";
+
 const textVariants = cva("font-sans text-foreground", {
   variants: {
     variant: {
-      /** Default UI copy (web `text-sm`). */
       body: "text-sm",
-      /** Composer/input copy and long-form reading (web `text-base`). */
       bodyLarge: "text-base",
-      /** Screen and sheet titles. */
-      title: "text-lg font-semibold",
-      /** Card and section headings. */
+      title: "text-xl font-bold",
       heading: "text-base font-semibold",
-      /** Form labels, row titles, button copy. */
+      headline: "text-base font-semibold",
       label: "text-sm font-medium",
-      /** Secondary line under a title. */
       caption: "text-xs text-muted-foreground",
-      /** Chrome section labels (web `text-xs subtle-foreground/75`). */
-      sectionLabel:
-        "text-xs font-medium uppercase tracking-wide text-subtle-foreground/75",
-      /** Count chips, ids, unread divider (web `text-2xs`). */
+      footnote: "text-xs",
+      sectionLabel: SECTION_LABEL_CLASS,
       chrome: "text-2xs text-muted-foreground",
-      /** Code, paths, ids. */
+      largeTitle: "text-3xl font-bold",
       mono: "font-mono text-sm",
     },
     tone: {
@@ -54,30 +53,33 @@ export type TextVariant = NonNullable<
 >;
 export type TextTone = NonNullable<VariantProps<typeof textVariants>["tone"]>;
 
+const TABULAR_NUMS: TextStyle = { fontVariant: ["tabular-nums"] };
+
 export interface TextProps
   extends RNTextProps, VariantProps<typeof textVariants> {
-  /** Overrides the weight implied by `variant`/`className`. */
   weight?: FontWeightName;
-  /** Forces Fira Code (or Inter when false) regardless of `className`. */
   mono?: boolean;
+  numeric?: boolean;
   className?: string;
 }
 
-/**
- * Themed text. Always sets `fontFamily` + `fontWeight` together (Expo Google
- * Fonts register one family per weight), deriving them from `weight`/`mono`
- * or from web-style `font-medium|semibold|bold` / `font-mono` classes.
- */
 export function Text({
   variant,
   tone,
   weight,
   mono,
+  numeric = false,
   className,
   style,
   ...props
 }: TextProps) {
   const merged = cn(textVariants({ variant, tone }), className);
   const font = resolveFont({ className: merged, weight, mono });
-  return <RNText className={merged} style={[font, style]} {...props} />;
+  return (
+    <RNText
+      className={merged}
+      style={[font, numeric ? TABULAR_NUMS : null, style]}
+      {...props}
+    />
+  );
 }

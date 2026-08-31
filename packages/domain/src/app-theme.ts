@@ -58,20 +58,12 @@ export const builtInThemes: readonly BuiltInThemeMeta[] = [
   },
 ];
 
-/** Built-in palette ids. */
 export const BUILTIN_THEME_IDS = builtInThemeIdSchema.options;
 
-/** Whether an id refers to a bundled built-in palette (vs. a custom theme). */
 export function isBuiltInThemeId(id: string): id is BuiltInThemeId {
   return (BUILTIN_THEME_IDS as readonly string[]).includes(id);
 }
 
-/**
- * Custom theme name = the directory under `<data-dir>/theme/`. Constrained to a
- * single safe path segment (no separators or `..`) so it can be used directly as
- * a filesystem path and a stable id; built-in ids are not allowed (they're
- * reserved and would shadow the custom theme).
- */
 export const customThemeNameSchema = z
   .string()
   .min(1)
@@ -86,20 +78,8 @@ export const customThemeNameSchema = z
     "Custom theme name collides with a built-in palette id",
   );
 
-/** Max size of a user-supplied custom stylesheet; keeps the persisted and
- * broadcast config payload bounded. */
 export const CUSTOM_THEME_CSS_MAX_LENGTH = 256_000;
 
-/**
- * The active palette as resolved by the server: a palette id (built-in or
- * custom theme name) plus the resolved custom CSS (null for built-ins, the
- * `theme.css` contents for a custom theme).
- */
-/**
- * Selectable favicon tints. The hex values and canvas tinting live in the
- * frontend; the contract only needs the set of allowed ids so the server can
- * validate writes. "default" leaves the monochrome glyph untinted.
- */
 export const FAVICON_COLORS = [
   "red",
   "orange",
@@ -124,19 +104,12 @@ export const defaultFaviconColor: FaviconColorPreference = "default";
 
 export const appThemeSchema = z.object({
   themeId: z.string().min(1),
-  /** Resolved CSS for a custom palette; null for built-ins. */
   customCss: z.string().max(CUSTOM_THEME_CSS_MAX_LENGTH).nullable(),
-  /** Browser tab icon tint; "default" leaves the glyph untinted. */
   faviconColor: faviconColorPreferenceSchema,
-  /**
-   * Pierre / Shiki names (and any custom JSON) derived from the active
-   * palette. Always filled at the server boundary.
-   */
   resolvedCodeTheme: resolvedCodeThemeSchema.default(defaultResolvedCodeTheme),
 });
 export type AppTheme = z.infer<typeof appThemeSchema>;
 
-/** A palette contributed by a currently loaded plugin. */
 export const pluginThemeMetaSchema = z.object({
   id: z.string().min(1),
   pluginId: z.string().min(1),
@@ -147,17 +120,10 @@ export type PluginThemeMeta = z.infer<typeof pluginThemeMetaSchema>;
 
 const PLUGIN_THEME_ID_PREFIX = "plugin:";
 
-/** Stable, collision-free palette id persisted for a plugin theme. */
 export function formatPluginThemeId(pluginId: string, themeId: string): string {
   return `${PLUGIN_THEME_ID_PREFIX}${pluginId}:${themeId}`;
 }
 
-/**
- * The complete appearance selection a client sends when changing the palette
- * and/or favicon tint. The server validates `themeId` (built-in id or an
- * existing custom theme) and resolves the CSS from disk for custom themes.
- * Callers changing only one facet must carry the other facet forward explicitly.
- */
 export const appThemeSelectionSchema = z.object({
   themeId: z.string().min(1),
   faviconColor: faviconColorPreferenceSchema,
