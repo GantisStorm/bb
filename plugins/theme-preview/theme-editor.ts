@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { z } from "zod";
@@ -17,11 +17,25 @@ const fontStackSchema = z
 
 const finiteNumber = () => z.number().finite();
 
+const colorTargetSchema = z.enum([
+  "canvas",
+  "ink",
+  "sidebar",
+  "sidebar-foreground",
+  "primary",
+  "timeline-accent",
+  "success",
+  "warning",
+  "attention",
+  "destructive",
+  "pr-merged",
+]);
+
 export const themeEditSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("colors"),
-      family: z.enum(["anchors", "sidebar", "primary", "timeline", "status"]),
+      target: colorTargetSchema,
       canvas: cssHexColorSchema,
       ink: cssHexColorSchema,
       sidebar: cssHexColorSchema,
@@ -75,7 +89,12 @@ export const editThemeInputSchema = z
   })
   .strict();
 
+export const undoThemeForkInputSchema = z
+  .object({ undoToken: z.string().uuid() })
+  .strict();
+
 export type ThemeEditInput = z.infer<typeof editThemeInputSchema>;
+export type UndoThemeForkInput = z.infer<typeof undoThemeForkInputSchema>;
 
 export type ThemeSourceKind = "builtin" | "custom" | "plugin";
 
@@ -92,21 +111,151 @@ export interface EditableThemeResource {
 interface ThemeEditorDependencies<Catalog> {
   resolveTheme(themeId: string): Promise<EditableThemeResource>;
   applyTheme(themeId: string): Promise<Catalog>;
+  selectTheme(themeId: string): Promise<void>;
+  loadCatalog(): Promise<Catalog>;
 }
 
 export interface ThemeEditResult<Catalog> {
   catalog: Catalog;
   themeId: string;
   forkedFrom: string | null;
+  undoToken: string | null;
 }
 
 const MANAGED_START = "/* theme-preview:managed:start */";
 const MANAGED_END = "/* theme-preview:managed:end */";
 const FORK_NAME_PATTERN = /\/\* theme-preview:fork-name:([A-Za-z0-9_-]+) \*\//;
 const CUSTOM_THEME_CSS_MAX_LENGTH = 256_000;
+const FORK_UNDO_TTL_MS = 15_000;
+
+interface ForkUndoRecord {
+  directory: string;
+  expectedCss: string;
+  expiresAt: number;
+  filePath: string;
+  forkedFrom: string;
+  themeId: string;
+}
 
 type Mode = "light" | "dark";
 type DeclarationMap = Map<string, string>;
+type ColorEdit = Extract<z.infer<typeof themeEditSchema>, { kind: "colors" }>;
+
+const COLOR_TARGET_FAMILY: Record<ColorEdit["target"], "anchors" | "sidebar" | "primary" | "timeline" | "status"> = {
+  canvas: "anchors",
+  ink: "anchors",
+  sidebar: "sidebar",
+  "sidebar-foreground": "sidebar",
+  primary: "primary",
+  "timeline-accent": "timeline",
+  success: "status",
+  warning: "status",
+  attention: "status",
+  destructive: "status",
+  "pr-merged": "status",
+};
+
+function parseHexColor(value: string): readonly [number, number, number, number] {
+  const hex = value.slice(1);
+  return [
+    Number.parseInt(hex.slice(0, 2), 16),
+    Number.parseInt(hex.slice(2, 4), 16),
+    Number.parseInt(hex.slice(4, 6), 16),
+    hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) / 255 : 1,
+  ];
+}
+
+function composite(foreground: readonly [number, number, number, number], background: readonly [number, number, number, number]): readonly [number, number, number, number] {
+  const alpha = foreground[3] + background[3] * (1 - foreground[3]);
+  if (alpha === 0) return [0, 0, 0, 0];
+  return [
+    (foreground[0] * foreground[3] + background[0] * background[3] * (1 - foreground[3])) / alpha,
+    (foreground[1] * foreground[3] + background[1] * background[3] * (1 - foreground[3])) / alpha,
+    (foreground[2] * foreground[3] + background[2] * background[3] * (1 - foreground[3])) / alpha,
+    alpha,
+  ];
+}
+
+function relativeLuminance(color: readonly [number, number, number, number]): number {
+  const linear = (channel: number) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(color[0]) + 0.7152 * linear(color[1]) + 0.0722 * linear(color[2]);
+}
+
+function hexContrast(foreground: string, background: string): number {
+  const opaqueBackground = composite(parseHexColor(background), [255, 255, 255, 1]);
+  const paintedForeground = composite(parseHexColor(foreground), opaqueBackground);
+  const first = relativeLuminance(paintedForeground);
+  const second = relativeLuminance(opaqueBackground);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+function requireContrast(label: string, foreground: string, background: string, minimum: number): void {
+  const ratio = hexContrast(foreground, background);
+  if (ratio >= minimum) return;
+  throw new Error(`${label} would be ${ratio.toFixed(1)}:1. Choose colors that keep it at ${minimum.toFixed(1)}:1 or better.`);
+}
+
+/**
+ * A syntactically valid color can still strand text or controls against the
+ * active canvas. Validate the relationship owned by the exact control before
+ * a durable custom theme is written.
+ */
+function assertColorEditSafety(mode: Mode, edit: ColorEdit): void {
+  switch (edit.target) {
+    case "canvas": {
+      requireContrast("Canvas / ink", edit.ink, edit.canvas, 4.5);
+      const checks: ReadonlyArray<readonly [string, string, number]> = [
+        ["Primary controls", edit.primary, 3],
+        ["Timeline / files", edit.timelineAccent, 4.5],
+        ["Success", edit.success, 4.5],
+        ["Warning", edit.warning, 4.5],
+        ["Attention / pending", edit.attention, 3],
+        ["Destructive controls", edit.destructive, 3],
+        ["Merged", edit.prMerged, 4.5],
+      ];
+      const failures = checks
+        .map(([label, value, minimum]) => ({ label, minimum, ratio: hexContrast(value, edit.canvas) }))
+        .filter(({ minimum, ratio }) => ratio < minimum);
+      if (failures.length > 0) {
+        const summary = failures.slice(0, 3).map(({ label, ratio }) => `${label} ${ratio.toFixed(1)}:1`).join(", ");
+        const remainder = failures.length > 3 ? `, and ${failures.length - 3} more` : "";
+        throw new Error(`Canvas would make ${summary}${remainder}. Keep text at 4.5:1 and controls at 3.0:1 or better.`);
+      }
+      break;
+    }
+    case "ink":
+      requireContrast("Canvas / ink", edit.ink, edit.canvas, 4.5);
+      break;
+    case "sidebar":
+    case "sidebar-foreground":
+      requireContrast("Sidebar / sidebar ink", edit.sidebarForeground, edit.sidebar, 4.5);
+      break;
+    case "primary":
+      requireContrast("Primary controls", edit.primary, edit.canvas, 4.5);
+      break;
+    case "timeline-accent":
+      requireContrast("Timeline / files", edit.timelineAccent, edit.canvas, 4.5);
+      break;
+    case "success":
+      requireContrast("Success", edit.success, edit.canvas, 4.5);
+      break;
+    case "warning":
+      requireContrast("Warning", edit.warning, edit.canvas, 4.5);
+      break;
+    case "attention":
+      requireContrast("Attention / pending", edit.attention, edit.canvas, 3);
+      break;
+    case "destructive":
+      requireContrast("Destructive controls", edit.destructive, mode === "dark" ? edit.ink : edit.canvas, 4.5);
+      break;
+    case "pr-merged":
+      requireContrast("Merged", edit.prMerged, edit.canvas, 4.5);
+      break;
+  }
+}
 
 interface ManagedDeclarations {
   shared: DeclarationMap;
@@ -499,13 +648,16 @@ export function applyThemeEdit(css: string, input: Pick<ThemeEditInput, "mode" |
   const { edit } = input;
 
   switch (edit.kind) {
-    case "colors":
-      if (edit.family === "anchors") replaceDeclarations(target, ANCHOR_TOKENS, anchorDeclarations(input.mode, edit.canvas, edit.ink));
-      else if (edit.family === "sidebar") replaceDeclarations(target, SIDEBAR_TOKENS, sidebarDeclarations(input.mode, edit.sidebar, edit.sidebarForeground));
-      else if (edit.family === "primary") replaceDeclarations(target, PRIMARY_TOKENS, primaryDeclarations(input.mode, edit.primary));
-      else if (edit.family === "timeline") replaceDeclarations(target, TIMELINE_TOKENS, { "timeline-accent": edit.timelineAccent, "file-accent": "var(--timeline-accent)" });
+    case "colors": {
+      assertColorEditSafety(input.mode, edit);
+      const family = COLOR_TARGET_FAMILY[edit.target];
+      if (family === "anchors") replaceDeclarations(target, ANCHOR_TOKENS, anchorDeclarations(input.mode, edit.canvas, edit.ink));
+      else if (family === "sidebar") replaceDeclarations(target, SIDEBAR_TOKENS, sidebarDeclarations(input.mode, edit.sidebar, edit.sidebarForeground));
+      else if (family === "primary") replaceDeclarations(target, PRIMARY_TOKENS, primaryDeclarations(input.mode, edit.primary));
+      else if (family === "timeline") replaceDeclarations(target, TIMELINE_TOKENS, { "timeline-accent": edit.timelineAccent, "file-accent": "var(--timeline-accent)" });
       else replaceDeclarations(target, STATUS_TOKENS, statusDeclarations(input.mode, edit));
       break;
+    }
     case "typography":
       replaceDeclarations(declarations.shared, TYPOGRAPHY_TOKENS, typographyDeclarations(edit));
       break;
@@ -604,33 +756,88 @@ async function allocateForkDirectory(themeDirectory: string, name: string): Prom
  */
 export function createThemeEditor<Catalog>(dependencies: ThemeEditorDependencies<Catalog>) {
   let queue: Promise<void> = Promise.resolve();
+  const undoRecords = new Map<string, ForkUndoRecord>();
+
+  const enqueue = <Result>(operation: () => Promise<Result>): Promise<Result> => {
+    const pending = queue.then(operation);
+    queue = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+
+  const discardExpiredUndoRecords = () => {
+    const now = Date.now();
+    for (const [token, record] of undoRecords) {
+      if (record.expiresAt <= now) undoRecords.delete(token);
+    }
+  };
+
+  const discardUndoForTheme = (themeId: string) => {
+    for (const [token, record] of undoRecords) {
+      if (record.themeId === themeId) undoRecords.delete(token);
+    }
+  };
 
   const editTheme = (input: ThemeEditInput): Promise<ThemeEditResult<Catalog>> => {
-    const operation = queue.then(async () => {
+    return enqueue(async () => {
+      discardExpiredUndoRecords();
       const resource = await dependencies.resolveTheme(input.themeId);
       if (resource.source === "custom") {
         if (!resource.filePath) throw new Error(`Custom theme '${resource.id}' has no editable theme.css`);
+        // A later edit makes the fork user-owned. Never leave an Undo action
+        // capable of deleting work performed after the automatic copy.
+        discardUndoForTheme(resource.id);
         await writeFileAtomically(resource.filePath, applyThemeEdit(resource.css, input));
         const catalog = await dependencies.applyTheme(resource.id);
-        return { catalog, themeId: resource.id, forkedFrom: null };
+        return { catalog, themeId: resource.id, forkedFrom: null, undoToken: null };
       }
 
+      // Validate and render before allocating the durable fork directory. A
+      // rejected edit must not leave an empty custom-theme resource behind.
+      const editedCss = applyThemeEdit(resource.css, input);
       const fork = await allocateForkDirectory(resource.themeDirectory, resource.name);
-      const path = join(fork.directory, "theme.css");
+      const filePath = join(fork.directory, "theme.css");
+      const css = withForkName(editedCss, fork.name);
       try {
-        await writeFileAtomically(path, withForkName(applyThemeEdit(resource.css, input), fork.name));
+        await writeFileAtomically(filePath, css);
+        const catalog = await dependencies.applyTheme(fork.id);
+        const undoToken = randomUUID();
+        undoRecords.set(undoToken, {
+          directory: fork.directory,
+          expectedCss: css,
+          expiresAt: Date.now() + FORK_UNDO_TTL_MS,
+          filePath,
+          forkedFrom: resource.id,
+          themeId: fork.id,
+        });
+        return { catalog, themeId: fork.id, forkedFrom: resource.id, undoToken };
       } catch (error) {
         await rm(fork.directory, { recursive: true, force: true });
         throw error;
       }
-      const catalog = await dependencies.applyTheme(fork.id);
-      return { catalog, themeId: fork.id, forkedFrom: resource.id };
     });
-    queue = operation.then(() => undefined, () => undefined);
-    return operation;
   };
 
-  return { editTheme };
+  const undoThemeFork = (input: UndoThemeForkInput): Promise<Catalog> => enqueue(async () => {
+    discardExpiredUndoRecords();
+    const record = undoRecords.get(input.undoToken);
+    if (!record) throw new Error("This theme copy can no longer be undone");
+
+    const currentCss = await readFile(record.filePath, "utf8").catch(() => null);
+    if (currentCss !== record.expectedCss) {
+      undoRecords.delete(input.undoToken);
+      throw new Error("This theme copy changed after it was created and was not removed");
+    }
+
+    // Restore the source before removing the active copy. The token names an
+    // exact plugin-created directory, and the byte-for-byte guard above keeps
+    // this from becoming a general custom-theme delete operation.
+    await dependencies.selectTheme(record.forkedFrom);
+    await rm(record.directory, { recursive: true });
+    undoRecords.delete(input.undoToken);
+    return dependencies.loadCatalog();
+  });
+
+  return { editTheme, undoThemeFork };
 }
 
 export const THEME_PREVIEW_MANAGED_MARKERS = { start: MANAGED_START, end: MANAGED_END } as const;

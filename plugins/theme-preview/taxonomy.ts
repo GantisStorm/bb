@@ -13,9 +13,8 @@
  *                   checked, editable, and disabled states. This stays a
  *                   compact sibling directly below overlays.
  * 4. `stylesheet` — the compact live theme editor. Direct values are real bb
- *                   controls (`data-tp-specimen`); the larger token families
- *                   they produce stay inspectable in a collapsed, read-only
- *                   derived-values section.
+ *                   controls (`data-tp-specimen`) with contextual previews
+ *                   for the values they produce.
  *
  * The app renders sections from this manifest and the coverage test asserts
  * every inventoried specimen actually reaches the DOM, so adding a specimen
@@ -44,7 +43,7 @@ export const MOCK_VIEWS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 4 — Style sheet. Direct controls plus read-only derived families.
+// Area 4 — Style sheet. Direct controls plus contextual previews.
 // `data-tp-specimen` values are `<kind>:<id>` from these tables.
 // ---------------------------------------------------------------------------
 
@@ -61,40 +60,6 @@ export const DIRECT_COLOR_CONTROLS = [
   { id: "attention", label: "Attention / pending", token: "attention", family: "status" },
   { id: "destructive", label: "Destructive", token: "destructive", family: "status" },
   { id: "pr-merged", label: "Merged", token: "pr-merged", family: "status" },
-] as const;
-
-/** Read-only colour groups; `contrast` names the measurement policy. */
-export const COLOR_GROUPS = [
-  {
-    id: "surfaces",
-    title: "Surfaces",
-    contrast: "none",
-    tokens: ["card", "popover", "secondary", "muted", "surface-recessed-solid", "surface-scrim"],
-  },
-  {
-    id: "ink",
-    title: "Ink",
-    contrast: "vs-surface", // each ink on the surface it sits on; 4.5:1 floor
-    tokens: ["foreground", "muted-foreground", "subtle-foreground", "readback-foreground"],
-  },
-  {
-    id: "accent",
-    title: "Accent",
-    contrast: "none",
-    tokens: ["file-accent", "surface-selected", "state-hover", "state-active"],
-  },
-  {
-    id: "status",
-    title: "Status",
-    contrast: "as-painted", // text token on its 15%/18% wash over canvas
-    tokens: ["success-foreground", "warning-text", "destructive-text", "surface-attention", "diff-added", "diff-removed"],
-  },
-  {
-    id: "lines",
-    title: "Lines",
-    contrast: "none",
-    tokens: ["border", "border-hairline", "border-seam", "sidebar-border", "input", "ring"],
-  },
 ] as const;
 
 /** Typography controls and their live derived samples. */

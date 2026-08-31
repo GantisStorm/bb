@@ -348,6 +348,11 @@ describe("editTheme RPC", () => {
         catalog: { activeThemeId: string | null; themes: Array<{ id: string; source: string }> };
         themeId: string;
         forkedFrom: string | null;
+        undoToken: string | null;
+      }>;
+      undoThemeFork(input: { undoToken: string }): Promise<{
+        activeThemeId: string | null;
+        themes: Array<{ id: string; source: string }>;
       }>;
     };
     const bb = {
@@ -385,7 +390,7 @@ describe("editTheme RPC", () => {
         mode: "light",
         edit: {
           kind: "colors",
-          family: "primary",
+          target: "primary",
           canvas: "#ffffff",
           ink: "#222222",
           sidebar: "#f8f8f8",
@@ -402,11 +407,18 @@ describe("editTheme RPC", () => {
 
       expect(result.themeId).toBe("default-copy");
       expect(result.forkedFrom).toBe("default");
+      expect(result.undoToken).toEqual(expect.any(String));
       expect(result.catalog.activeThemeId).toBe("default-copy");
       expect(result.catalog.themes.find((theme) => theme.id === "default-copy")?.source).toBe("custom");
       expect(setCalls).toEqual(["default-copy"]);
       expect(await readFile(join(directory, "default-copy", "theme.css"), "utf8"))
         .toContain("--primary: #2255cc;");
+
+      const undone = await handlers.undoThemeFork({ undoToken: result.undoToken! });
+      expect(undone.activeThemeId).toBe("default");
+      expect(undone.themes.some((theme) => theme.id === "default-copy")).toBe(false);
+      expect(setCalls).toEqual(["default-copy", "default"]);
+      expect((await readdir(directory)).includes("default-copy")).toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

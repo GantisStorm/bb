@@ -8,6 +8,7 @@ import {
   createThemeEditor,
   editThemeInputSchema,
   readThemePreviewForkName,
+  undoThemeForkInputSchema,
   type EditableThemeResource,
 } from "./theme-editor";
 
@@ -53,9 +54,11 @@ export const rpcContract = defineRpcContract({
         catalog: catalogSchema,
         themeId: z.string().min(1),
         forkedFrom: z.string().nullable(),
+        undoToken: z.string().uuid().nullable(),
       })
       .strict(),
   },
+  undoThemeFork: { input: undoThemeForkInputSchema, output: catalogSchema },
 });
 
 export type ThemeSwatch = z.infer<typeof swatchSchema>;
@@ -672,6 +675,8 @@ export default async function plugin(bb: BbPluginApi) {
   const themeEditor = createThemeEditor({
     resolveTheme: (themeId) => resolveEditableTheme(bb, themeId),
     applyTheme: (themeId) => catalogLoader.applyEditedTheme(themeId),
+    selectTheme: async (themeId) => { await catalogLoader.setTheme(themeId); },
+    loadCatalog: () => catalogLoader.catalog(),
   });
 
   // Instant path. Watch the custom-theme directory (new themes, edits) and push
@@ -729,6 +734,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async editTheme(input) {
       return themeEditor.editTheme(input);
+    },
+    async undoThemeFork(input) {
+      return themeEditor.undoThemeFork(input);
     },
   });
 

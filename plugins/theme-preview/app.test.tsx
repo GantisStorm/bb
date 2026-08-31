@@ -109,12 +109,13 @@ afterEach(() => {
   document.documentElement.classList.remove("dark");
 });
 
-type TestRpc = Omit<PluginRpcTestHandlers<typeof rpcContract>, "editTheme"> &
-  Partial<Pick<PluginRpcTestHandlers<typeof rpcContract>, "editTheme">>;
+type TestRpc = Omit<PluginRpcTestHandlers<typeof rpcContract>, "editTheme" | "undoThemeFork"> &
+  Partial<Pick<PluginRpcTestHandlers<typeof rpcContract>, "editTheme" | "undoThemeFork">>;
 
 function withEditHandler(rpc: TestRpc): PluginRpcTestHandlers<typeof rpcContract> {
   return {
-    editTheme: ({ themeId }) => ({ catalog: DEFAULT_CATALOG, themeId, forkedFrom: null }),
+    editTheme: ({ themeId }) => ({ catalog: DEFAULT_CATALOG, themeId, forkedFrom: null, undoToken: null }),
+    undoThemeFork: () => DEFAULT_CATALOG,
     ...rpc,
   };
 }
@@ -241,7 +242,7 @@ describe("Theme Preview", () => {
     expect(active?.textContent).toContain("Default");
   });
 
-  it("restacks the main areas on mobile while keeping derived values collapsed", async () => {
+  it("restacks the main areas on mobile without a standalone derived-values inventory", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(480);
     try {
       renderPreview({
@@ -254,8 +255,10 @@ describe("Theme Preview", () => {
       // The compact interaction areas stay together before the style sheet.
       const areas = [...document.querySelectorAll("[data-tp-area]")].map((el) => el.getAttribute("data-tp-area"));
       expect(areas).toEqual(["mock", "overlays", "components", "stylesheet"]);
-      expect(screen.getByRole("button", { name: "Derived values" }).getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByText("Derived values")).toBeNull();
       expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
+      expect(document.querySelector("[data-tp-derived=radius-ladder]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-shadow-preview]")).not.toBeNull();
     } finally {
       width.mockRestore();
     }
@@ -275,7 +278,8 @@ describe("Theme Preview", () => {
         expect(screen.getByRole("tab", { name: view.label })).toBeDefined();
       }
       // Area 2: every style-sheet specimen is one discrete, targetable element.
-      fireEvent.click(screen.getByRole("button", { name: "Advanced geometry" }));
+      expect(screen.queryByRole("button", { name: "Advanced geometry" })).toBeNull();
+      expect(document.querySelector("[data-tp-advanced-geometry]")).not.toBeNull();
       for (const specimenId of STYLESHEET_SPECIMEN_IDS) {
         expect(
           document.querySelectorAll(`[data-tp-specimen="${specimenId}"]`),
@@ -319,15 +323,21 @@ describe("Theme Preview", () => {
     }
   });
 
-  it("commits an active-mode color family, blocks duplicates, then selects and announces the durable fork", async () => {
+  it("commits an active-mode color family, announces the durable fork, and undoes only that copy", async () => {
     const pending = deferred<Awaited<ReturnType<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>>>();
+    const undoPending = deferred<Awaited<ReturnType<PluginRpcTestHandlers<typeof rpcContract>["undoThemeFork"]>>>();
     const edits: Parameters<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>[0][] = [];
+    const undoCalls: Parameters<PluginRpcTestHandlers<typeof rpcContract>["undoThemeFork"]>[0][] = [];
     renderPreview({
       themeCatalog: () => DEFAULT_CATALOG,
       setTheme: () => DEFAULT_CATALOG,
       editTheme: (input) => {
         edits.push(input);
         return pending.promise;
+      },
+      undoThemeFork: (input) => {
+        undoCalls.push(input);
+        return undoPending.promise;
       },
     });
 
@@ -345,7 +355,7 @@ describe("Theme Preview", () => {
       mode: "light",
       edit: {
         kind: "colors",
-        family: "anchors",
+        target: "canvas",
         canvas: "#112233",
         ink: "#222222",
         sidebar: "#f5f5f5",
@@ -361,15 +371,31 @@ describe("Theme Preview", () => {
     });
 
     expect(canvas.disabled).toBe(true);
+    expect(canvas.className).toContain("disabled:opacity-100");
     expect((screen.getByRole("combobox", { name: /Saving Default/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("combobox", { name: /Saving Default/i }).className).toContain("disabled:opacity-100");
     expect(edits).toHaveLength(1);
 
-    await act(async () => pending.resolve({ catalog: FORKED_CATALOG, themeId: "default-copy", forkedFrom: "default" }));
+    await act(async () => pending.resolve({ catalog: FORKED_CATALOG, themeId: "default-copy", forkedFrom: "default", undoToken: "ec0ce536-87aa-49a8-908c-f0a4a99d3b40" }));
 
     expect(await screen.findByRole("combobox", { name: /Default copy/i })).toBeDefined();
-    expect(toast.success).toHaveBeenCalledWith("Created Default copy", {
-      description: "Now editing Default copy. Default is unchanged.",
-    });
+    const notice = await screen.findByRole("button", { name: "Theme copy created: Default copy. Press Enter or Space to undo" });
+    notice.focus();
+    expect(document.activeElement).toBe(notice);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("Created Default copy");
+    expect(tooltip.textContent).toContain("Default is unchanged");
+    expect(toast.success).not.toHaveBeenCalled();
+
+    const undo = within(tooltip).getByRole("button", { name: "Undo" });
+    fireEvent.click(notice, { detail: 0 });
+    expect(undoCalls).toEqual([{ undoToken: "ec0ce536-87aa-49a8-908c-f0a4a99d3b40" }]);
+    expect((within(tooltip).getByRole("button", { name: "Undoing…" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => undoPending.resolve(DEFAULT_CATALOG));
+    expect(await screen.findByRole("combobox", { name: /Default light/i })).toBeDefined();
+    expect(screen.queryByRole("button", { name: /Theme copy created/i })).toBeNull();
+    expect(document.querySelector("[data-tp-fork-status]")?.textContent).toContain("Removed Default copy. Restored Default.");
   });
 
   it("restores the computed value when an edit fails", async () => {
@@ -407,12 +433,37 @@ describe("Theme Preview", () => {
       expect(frame.style.zoom ?? "").toBe("");
       expect(frame.style.transform).toBe("");
       expect(frame.style.width).toBe("100%");
+      const container = frame.closest<HTMLElement>("[data-tp-mock-container]");
+      expect(container?.style.width).toBe("100%");
+      expect(container?.style.maxWidth).toBe("100%");
+      expect(container?.style.boxSizing).toBe("border-box");
+      expect(container?.style.padding).toBe("16px");
       // At a phone-width pane the sidebar and info panel stay out.
       expect(screen.queryByText("bb-plugins")).toBeNull();
       expect(screen.queryByText("Pull request")).toBeNull();
     } finally {
       width.mockRestore();
     }
+  });
+
+  it("presents the shadow preview as a compact static sample", async () => {
+    renderPreview({
+      themeCatalog: () => DEFAULT_CATALOG,
+      setTheme: () => DEFAULT_CATALOG,
+    });
+
+    const preview = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>("[data-tp-shadow-preview]");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(preview.style.height).toBe("24px");
+    expect(preview.style.width).toBe("48px");
+    expect(preview.getAttribute("aria-label")).toBe("Live shadow sample");
+    const label = screen.getByText("Live shadow");
+    expect(label.nextElementSibling).toBe(preview);
+    expect(screen.queryByRole("button", { name: "Advanced geometry" })).toBeNull();
+    expect(document.querySelector("[data-tp-advanced-geometry]")).not.toBeNull();
   });
 
   it("includes the sidebar and info panel once the pane is wide enough", async () => {
@@ -484,6 +535,77 @@ describe("Theme Preview", () => {
     }
   });
 
+  it("keeps badges on one row and groups each color label, picker, and value", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
+    try {
+      renderPreview({
+        themeCatalog: () => DEFAULT_CATALOG,
+        setTheme: () => DEFAULT_CATALOG,
+      });
+      await waitFor(() => expect(document.querySelector("[data-tp-band=desktop]")).not.toBeNull());
+
+      const badges = document.querySelector<HTMLElement>("[data-tp-badge-row]");
+      expect(badges?.style.flexWrap).toBe("nowrap");
+      expect(badges?.style.overflowX).toBe("auto");
+
+      const canvas = screen.getByLabelText("Canvas color") as HTMLInputElement;
+      expect(canvas.className).toContain("h-4");
+      expect(canvas.className).toContain("w-6");
+      expect(canvas.className).toContain("rounded");
+      expect(canvas.className).toContain("border-0");
+      expect(canvas.className).toContain("enabled:hover:ring-2");
+      const specimen = canvas.closest<HTMLElement>("[data-tp-specimen='color:canvas']");
+      expect(specimen?.tagName).toBe("DIV");
+      expect(specimen?.style.display).toBe("grid");
+      expect(specimen?.style.gridTemplateColumns).toBe("minmax(0, max-content) 24px max-content");
+      expect(specimen?.style.columnGap).toBe("6px");
+      expect(specimen?.querySelectorAll("input, button, [role=button]")).toHaveLength(1);
+
+      const shadowColor = screen.getByLabelText("Shadow color") as HTMLInputElement;
+      expect(shadowColor.closest("label")).toBeNull();
+      expect(shadowColor.closest("[data-tp-specimen='shadow:color']")?.tagName).toBe("DIV");
+
+      const contrast = document.querySelector<HTMLElement>("[data-tp-base-contrast]");
+      expect(contrast?.style.background).toContain("--surface-recessed-soft-solid");
+      expect(contrast?.textContent).toContain("Theme safety");
+      expect(contrast?.textContent).toContain("Text accents");
+      expect(contrast?.textContent).toContain("Controls");
+
+      const components = document.querySelector<HTMLElement>("[data-tp-components]");
+      expect(components?.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+      expect(components?.style.columnGap).toBe("16px");
+      expect(components?.style.rowGap).toBe("16px");
+      expect(document.querySelector<HTMLElement>("[data-tp-button-grid]")?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
+      for (const block of document.querySelectorAll<HTMLElement>("[data-tp-block=switch], [data-tp-block=checkbox]")) {
+        expect(block.style.paddingBlock).toBe("12px");
+        expect(block.style.paddingInline).toBe("");
+        expect(block.querySelector<HTMLElement>("[data-tp-toggle-controls]")?.style.paddingInline).toBe("");
+      }
+
+      const radiusPreview = document.querySelector<HTMLElement>("[data-tp-derived=radius-ladder] > span");
+      expect(radiusPreview?.style.height).toBe("32px");
+      expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
+      expect(document.querySelector("[data-tp-shadow-ladder]")).toBeNull();
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("shows a BB tooltip when a responsive color label is truncated", async () => {
+    renderPreview({
+      themeCatalog: () => DEFAULT_CATALOG,
+      setTheme: () => DEFAULT_CATALOG,
+    });
+    const label = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>("[data-tp-specimen='color:attention'] [data-tp-truncated='true']");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(label.tabIndex).toBe(0);
+    fireEvent.focus(label);
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Attention / pending");
+  });
+
   it("gives each split pane its own conversation", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
     try {
@@ -543,6 +665,7 @@ describe("Theme Preview", () => {
     const search = await screen.findByRole("textbox", { name: "Search threads" });
     fireEvent.change(search, { target: { value: "endless color" } });
     expect((search as HTMLInputElement).value).toBe("endless color");
+    expect(screen.queryByRole("textbox", { name: "Filter" })).toBeNull();
 
     // Switch and checkbox toggle, and expose checked state.
     const notifications = screen.getByRole("switch", { name: "Notifications" });
@@ -585,7 +708,7 @@ describe("Theme Preview", () => {
     await waitFor(() => expect(document.querySelector("[data-tp-tooltip-content]")).toBeNull());
   });
 
-  it("keeps direct controls above a collapsed derived-values disclosure", async () => {
+  it("keeps the style sheet focused on direct controls and contextual previews", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
     try {
       renderPreview({
@@ -599,10 +722,12 @@ describe("Theme Preview", () => {
       expect(blocks.slice(0, 2)).toEqual(["colors", "systems"]);
       expect(screen.getByText("Mode colors")).toBeDefined();
       expect(screen.queryByText("Foundation · surfaces")).toBeNull();
-      const derived = screen.getByRole("button", { name: "Derived values" });
-      expect(derived.getAttribute("aria-expanded")).toBe("false");
-      fireEvent.click(derived);
-      expect(document.querySelector("[data-tp-derived-values]")).not.toBeNull();
+      expect(screen.queryByText("Derived values")).toBeNull();
+      expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
+      expect(document.querySelector("[data-tp-derived=type-steps]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-derived=row-previews]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-derived=radius-ladder]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-shadow-preview]")).not.toBeNull();
     } finally {
       width.mockRestore();
     }
@@ -636,10 +761,15 @@ describe("Theme Preview", () => {
       });
 
       await waitFor(() => expect(document.querySelector("[data-tp-band=desktop]")).not.toBeNull());
-      expect(document.querySelector<HTMLElement>("[data-tp-header-inner]")?.style.maxWidth).toBe("1600px");
+      const header = document.querySelector<HTMLElement>("[data-tp-header-inner]");
+      expect(header?.style.maxWidth).toBe("1600px");
+      expect(header?.style.padding).toContain("20px");
       expect(document.querySelector<HTMLElement>("[data-tp-layout=desktop]")?.style.maxWidth).toBe("1600px");
+      expect(document.querySelector<HTMLElement>("[data-tp-mock-container]")?.style.padding).toBe("20px");
       expect(document.querySelector<HTMLElement>("[data-tp-area=components]")?.closest("[data-tp-layout=desktop]")?.getAttribute("data-tp-layout")).toBe("desktop");
-      expect(document.querySelector<HTMLElement>("[data-tp-area=stylesheet]")?.style.maxWidth).toBe("1600px");
+      const stylesheet = document.querySelector<HTMLElement>("[data-tp-area=stylesheet]");
+      expect(stylesheet?.style.maxWidth).toBe("1600px");
+      expect(stylesheet?.style.padding).toContain("20px");
     } finally {
       width.mockRestore();
     }

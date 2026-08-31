@@ -2,11 +2,8 @@ import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plu
 import { Badge as BbBadge } from "@bb/shared-ui/badge";
 import { Button as BbButton } from "@bb/shared-ui/button";
 import { Checkbox as BbCheckbox } from "@bb/shared-ui/checkbox";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@bb/shared-ui/collapsible";
+import { Notification02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
   DialogClose,
@@ -68,6 +65,7 @@ import type { rpcContract } from "./server";
 import type { ThemeEditInput } from "./theme-editor";
 import {
   contentInsetForWidth,
+  SURFACE_RAIL_WIDTH,
   frameCompositionForWidth,
   frameHeightForWidth,
   INFO_PANEL_WIDTH,
@@ -80,7 +78,6 @@ import {
 import { LatestRequest, contrastRatio } from "./theme-utils";
 import {
   AREA_TITLES,
-  COLOR_GROUPS,
   DIRECT_COLOR_CONTROLS,
   MOCK_VIEWS,
   RADIUS_SPECIMENS,
@@ -134,6 +131,12 @@ function withRpcTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
 
 type Mode = "light" | "dark";
 type ThemeSelection = { themeId: string; mode: Mode };
+type ForkNotice = {
+  copyName: string;
+  sourceName: string;
+  themeId: string;
+  undoToken: string;
+};
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -314,7 +317,7 @@ function Composer({ focused = false, text }: { focused?: boolean; text?: string 
 function VerificationCard() {
   const rows: ReadonlyArray<[string, string, Tone]> = [
     ["Theme tokens", "28 resolved", "success"],
-    ["Contrast floor", "AA passed", "success"],
+    ["Base contrast", "AA passed", "success"],
     ["Reference sheet", "Updated", "secondary"],
   ];
   return (
@@ -632,51 +635,20 @@ function Frame({ view, themeName, mode }: { view: View; themeName: string; mode:
 
 // ---------------------------------------------------------------------------
 // Area 4 — Style sheet. The specimen inventory lives in taxonomy.ts. Direct
-// values are compact shared controls; the larger generated families remain
-// available for inspection in a collapsed read-only disclosure.
+// values are compact shared controls with contextual previews beside the
+// controls that produce them.
 // ---------------------------------------------------------------------------
 
-/**
- * The pair the product actually paints, not the raw token on canvas: status
- * badges render their text token over the status colour at 15% (bg-success/15
- * etc.), and diff washes carry ordinary foreground text at 18%.
- */
-type ContrastSpec = { fgToken: string; fgFallbackToken?: string; washToken: string; washAlpha: number };
-const STATUS_CONTRAST: Record<string, ContrastSpec> = {
-  "success-foreground": { fgToken: "success-foreground", fgFallbackToken: "success", washToken: "success", washAlpha: 0.15 },
-  "warning-text": { fgToken: "warning-text", fgFallbackToken: "warning", washToken: "warning", washAlpha: 0.15 },
-  "destructive-text": { fgToken: "destructive-text", fgFallbackToken: "destructive", washToken: "destructive", washAlpha: 0.15 },
-  "diff-added": { fgToken: "foreground", washToken: "diff-added", washAlpha: 0.18 },
-  "diff-removed": { fgToken: "foreground", washToken: "diff-removed", washAlpha: 0.18 },
-};
-
-// Per-group props for the color specimen tables, from the taxonomy's declared
-// contrast policy.
-function colorGroupRowProps(policy: string, token: string): { contrastAgainst?: string; contrastSpec?: ContrastSpec } {
-  if (policy === "vs-surface") return { contrastAgainst: token === "sidebar-foreground" ? "sidebar" : "canvas" };
-  if (policy === "as-painted") return { contrastSpec: STATUS_CONTRAST[token] };
-  return {};
-}
-
-// Direct editor values, derived inspection values, and the private metadata
+// Direct editor values, picker preview colours, and the private metadata
 // written by the editor-managed typography/shadow families.
 const ALL_TOKENS = [
   ...DIRECT_COLOR_CONTROLS.map((control) => control.token),
-  ...COLOR_GROUPS.flatMap((group) => group.tokens),
-  "font-sans", "font-mono", "text-2xs", "text-2xs--line-height",
-  "text-xs", "text-xs--line-height", "text-sm", "text-sm--line-height",
-  "text-base", "text-base--line-height", "tp-text-scale", "tp-line-height",
+  "card", "file-accent", "foreground",
+  "font-sans", "font-mono", "text-sm", "tp-text-scale", "tp-line-height",
   "spacing", "tracking-normal", "bb-sidebar-row-height", "icon-stroke-width",
   "radius", "shadow-x", "shadow-y", "shadow-blur", "shadow-spread",
   "shadow-color", "shadow-opacity", "tp-shadow-color", "tp-shadow-opacity-percent",
 ];
-
-/** "rgb(r, g, b)" / "rgba(r, g, b, a)" → the same colour at the given alpha. */
-function atAlpha(rgb: string, alpha: number): string {
-  const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb);
-  if (!match) return rgb;
-  return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha})`;
-}
 
 type Computed = Record<string, { value: string; hex: string; rgb: string; sidebar: string | null }>;
 
@@ -714,38 +686,62 @@ function resolveColor(color: string): { rgb: string; hex: string } {
 
 function useComputedTokens(names: readonly string[], revision: string): Computed {
   const [out, setOut] = useState<Computed>({});
+  const acceptedFingerprint = useRef<string | null>(null);
   useEffect(() => {
-    // Re-read on every theme/mode change (revision) — a beat later, because the
-    // theme CSS lands asynchronously after the rpc response.
-    const timer = setTimeout(() => {
-    const rootStyle = getComputedStyle(document.documentElement);
-    const probe = document.createElement("div");
-    probe.className = "fixed bg-sidebar";
-    probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:0;height:0;pointer-events:none";
-    document.body.appendChild(probe);
-    const sidebarStyle = getComputedStyle(probe);
-    const swatch = document.createElement("span");
-    swatch.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px";
-    document.body.appendChild(swatch);
-    const next: Computed = {};
-    for (const name of names) {
-      const value = rootStyle.getPropertyValue(`--${name}`).trim();
-      const scoped = sidebarStyle.getPropertyValue(`--${name}`).trim();
-      swatch.style.backgroundColor = "";
-      swatch.style.backgroundColor = `var(--${name})`;
-      const resolved = value ? resolveColor(getComputedStyle(swatch).backgroundColor) : { rgb: "", hex: "—" };
-      next[name] = {
-        value,
-        hex: resolved.hex,
-        rgb: resolved.rgb,
-        sidebar: scoped && scoped !== value ? scoped : null,
-      };
-    }
-    probe.remove();
-    swatch.remove();
-    setOut(next);
-    }, 350);
-    return () => clearTimeout(timer);
+    // The active stylesheet is swapped asynchronously after the RPC response.
+    // Keep optimistic editor values in place until a changed token set has
+    // settled for two reads; accepting the previous sheet makes a successful
+    // slider edit visibly snap back before repainting again.
+    const previousFingerprint = acceptedFingerprint.current;
+    const deadline = Date.now() + 4_000;
+    let candidateFingerprint: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => {
+      const rootStyle = getComputedStyle(document.documentElement);
+      const values = names.map((name) => rootStyle.getPropertyValue(`--${name}`).trim());
+      const fingerprint = values.join("\u0001");
+      if (previousFingerprint !== null && Date.now() < deadline) {
+        if (fingerprint === previousFingerprint) {
+          candidateFingerprint = null;
+          timer = setTimeout(read, 100);
+          return;
+        }
+        if (candidateFingerprint !== fingerprint) {
+          candidateFingerprint = fingerprint;
+          timer = setTimeout(read, 100);
+          return;
+        }
+      }
+
+      const probe = document.createElement("div");
+      probe.className = "fixed bg-sidebar";
+      probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:0;height:0;pointer-events:none";
+      document.body.appendChild(probe);
+      const sidebarStyle = getComputedStyle(probe);
+      const swatch = document.createElement("span");
+      swatch.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px";
+      document.body.appendChild(swatch);
+      const next: Computed = {};
+      for (const [index, name] of names.entries()) {
+        const value = values[index] ?? "";
+        const scoped = sidebarStyle.getPropertyValue(`--${name}`).trim();
+        swatch.style.backgroundColor = "";
+        swatch.style.backgroundColor = `var(--${name})`;
+        const resolved = value ? resolveColor(getComputedStyle(swatch).backgroundColor) : { rgb: "", hex: "—" };
+        next[name] = {
+          value,
+          hex: resolved.hex,
+          rgb: resolved.rgb,
+          sidebar: scoped && scoped !== value ? scoped : null,
+        };
+      }
+      probe.remove();
+      swatch.remove();
+      acceptedFingerprint.current = fingerprint;
+      setOut(next);
+    };
+    timer = setTimeout(read, previousFingerprint === null ? 350 : 0);
+    return () => { if (timer !== undefined) clearTimeout(timer); };
   }, [names, revision]);
   return out;
 }
@@ -774,47 +770,6 @@ function useResolvedRadii(revision: string): Record<string, string> {
   return out;
 }
 
-function TokenRow({ name, computed, contrastAgainst, contrastSpec }: { name: string; computed: Computed; contrastAgainst?: string; contrastSpec?: ContrastSpec }) {
-  const c = computed[name];
-  // Ink rows carry their WCAG ratio against the surface they sit on; status
-  // rows measure the pair the product paints (text token on the 15%/18% wash
-  // over canvas). The 4.5:1 body-text floor is the pass mark either way.
-  let ratio: number | null = null;
-  if (contrastSpec) {
-    const fg = computed[contrastSpec.fgToken]?.rgb || (contrastSpec.fgFallbackToken ? computed[contrastSpec.fgFallbackToken]?.rgb : "");
-    const wash = computed[contrastSpec.washToken]?.rgb;
-    if (fg && wash && computed.canvas?.rgb) {
-      ratio = contrastRatio(fg, atAlpha(wash, contrastSpec.washAlpha), computed.canvas.rgb);
-    }
-  } else if (contrastAgainst && c?.rgb && computed[contrastAgainst]?.rgb) {
-    ratio = contrastRatio(c.rgb, computed[contrastAgainst].rgb, contrastAgainst === "canvas" ? undefined : computed.canvas?.rgb);
-  }
-  const hasRatioColumn = contrastAgainst !== undefined || contrastSpec !== undefined;
-  return (
-    <div data-tp-derived-token={name} style={{ display: "grid", gridTemplateColumns: hasRatioColumn ? "24px minmax(0, 1fr) 72px 46px" : "24px minmax(0, 1fr) 72px", alignItems: "center", columnGap: 6, height: 22 }}>
-      <span
-        title={c?.sidebar ? `${c.value}\nsidebar override: ${c.sidebar}` : c?.value}
-        style={{
-          width: 24, height: 14, borderRadius: 3, background: c?.value ? v(name) : "transparent",
-          boxShadow: `inset 0 0 0 1px ${c?.sidebar ? v("warning") : v("border-hairline", v("border"))}`,
-        }}
-      />
-      <span style={{ fontFamily: MONO, fontSize: 10.5, color: v("foreground"), overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</span>
-      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", fontFamily: MONO, fontSize: 10.5, color: v("muted-foreground"), textAlign: "right", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{c?.hex ?? ""}</span>
-      {hasRatioColumn ? (
-        <span
-          title={contrastSpec
-            ? `contrast of --${contrastSpec.fgToken} on --${contrastSpec.washToken} at ${Math.round(contrastSpec.washAlpha * 100)}% over canvas, as bb paints it · WCAG floor 4.5:1`
-            : `contrast vs --${contrastAgainst} · WCAG floor 4.5:1`}
-          style={{ fontFamily: MONO, fontSize: 10.5, textAlign: "right", fontVariantNumeric: "tabular-nums", color: ratio === null || ratio >= 4.5 ? v("success") : v("destructive-text", v("destructive")), fontWeight: ratio !== null && ratio < 4.5 ? 600 : 400, whiteSpace: "nowrap" }}
-        >
-          {ratio === null ? "" : `${ratio.toFixed(2)}:1`}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Layout system, level 1: inside a content area.
 //
@@ -827,30 +782,58 @@ function TokenRow({ name, computed, contrastAgainst, contrastSpec }: { name: str
 const TEXT_SECTION: CSSProperties = { margin: 0, fontSize: 14, lineHeight: "20px", fontWeight: 650, letterSpacing: "-0.01em", color: v("foreground") };
 const TEXT_CATEGORY: CSSProperties = { margin: 0, fontSize: 10.5, lineHeight: "16px", fontWeight: 650, letterSpacing: "0.065em", textTransform: "uppercase", color: v("foreground") };
 const TEXT_LABEL: CSSProperties = { fontSize: 12.5, lineHeight: "18px", fontWeight: 550, color: v("foreground") };
-const TEXT_VALUE: CSSProperties = { fontFamily: MONO, fontSize: 11, lineHeight: "16px", fontVariantNumeric: "tabular-nums", color: v("muted-foreground") };
-const TEXT_SUBLABEL: CSSProperties = { fontSize: 10, lineHeight: "15px", fontWeight: 600, letterSpacing: "0.045em", textTransform: "uppercase", color: v("muted-foreground") };
+const TEXT_VALUE: CSSProperties = { fontFamily: MONO, fontSize: 11.5, lineHeight: "17px", fontVariantNumeric: "tabular-nums", color: v("readback-foreground", v("muted-foreground")) };
+const TEXT_SUBLABEL: CSSProperties = { fontSize: 10.5, lineHeight: "16px", fontWeight: 600, letterSpacing: "0.045em", textTransform: "uppercase", color: v("readback-foreground", v("muted-foreground")) };
 const TEXT_SUPPORT: CSSProperties = { fontSize: 11.5, lineHeight: "17px", color: v("muted-foreground") };
+
+// The sheet has one compact sizing ladder. Editable controls stay larger than
+// their read-only previews. Keeping these roles shared avoids independent
+// pixel tuning by family.
+const SHEET_SPACE = { inline: 4, control: 6, group: 12, section: 16 } as const;
+const SHEET_SIZE = { field: 28, fontRow: 30, colorRow: 28, preview: 40, radiusPreview: 32, typePreview: 44 } as const;
+const COLOR_CONTROL_LAYOUT: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, max-content) 24px max-content",
+  alignItems: "center",
+  justifyContent: "start",
+  columnGap: SHEET_SPACE.control,
+  minWidth: 0,
+  minHeight: SHEET_SIZE.colorRow,
+};
+
+const EDITOR_COLOR_INPUT_CLASS = cn(
+  "h-4 w-6 cursor-pointer rounded border-0 bg-transparent p-0 shadow-none transition-shadow",
+  "enabled:hover:ring-2 enabled:hover:ring-ring enabled:hover:ring-offset-1 enabled:hover:ring-offset-background",
+  "disabled:cursor-not-allowed disabled:opacity-100",
+  "[&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded [&::-webkit-color-swatch]:border-0",
+  "[&::-moz-color-swatch]:rounded [&::-moz-color-swatch]:border-0",
+);
+
+/** The label rail is capped at 86px; known longer labels get BB tooltips. */
+function TruncatedControlLabel({ children, truncated }: { children: string; truncated: boolean }) {
+  const label = (
+    <span
+      data-tp-color-label=""
+      data-tp-truncated={truncated || undefined}
+      data-tp-role="label"
+      tabIndex={truncated ? 0 : undefined}
+      className={cn(truncated && "rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring")}
+      style={{ ...TEXT_LABEL, display: "block", flex: "0 1 auto", minWidth: 0, maxWidth: 86, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}
+    >
+      {children}
+    </span>
+  );
+  if (!truncated) return label;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{label}</TooltipTrigger>
+      <TooltipContent data-tp-color-tooltip="" side="top" sideOffset={4}>{children}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 function AreaHeading({ area }: { area: "overlays" | "components" | "stylesheet" }) {
   return <h2 id={`tp-${area}-heading`} data-tp-role="section" style={TEXT_SECTION}>{AREA_TITLES[area]}</h2>;
-}
-
-function SpecimenGrid({ min = 260, children }: { min?: number; children: ReactNode }) {
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fit, minmax(${min}px, 1fr))`, columnGap: 28, alignItems: "start" }}>
-      {children}
-    </div>
-  );
-}
-
-/** A titled cluster. `title` is the category role in the hierarchy. */
-function SpecimenBlock({ id, title, wide = false, children }: { id?: string; title: string; wide?: boolean; children: ReactNode }) {
-  return (
-    <div data-tp-block={id} style={{ marginBottom: 18, gridColumn: wide ? "1 / -1" : undefined, minWidth: 0 }}>
-      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 8 }}>{title}</h3>
-      {children}
-    </div>
-  );
 }
 
 /** First family of a CSS font list, unquoted — what the sheet reports. */
@@ -859,10 +842,15 @@ function firstFamily(value: string | undefined): string {
   return value.split(",")[0]?.trim().replace(/^["']|["']$/g, "") ?? "";
 }
 
+/** CSS custom properties preserve author formatting; RPC font stacks do not. */
+function normalizeFontStack(value: string | undefined, fallback: string): string {
+  return value?.replace(/\s+/g, " ").trim() || fallback;
+}
+
 type ThemeEdit = ThemeEditInput["edit"];
 type ColorEdit = Extract<ThemeEdit, { kind: "colors" }>;
-type ColorFamily = ColorEdit["family"];
-type DirectColors = Omit<ColorEdit, "kind" | "family">;
+type ColorTarget = ColorEdit["target"];
+type DirectColors = Omit<ColorEdit, "kind" | "target">;
 type TypographyValues = Omit<Extract<ThemeEdit, { kind: "typography" }>, "kind">;
 type RhythmValues = Omit<Extract<ThemeEdit, { kind: "rhythm" }>, "kind">;
 type ShadowValues = Omit<Extract<ThemeEdit, { kind: "shadow" }>, "kind">;
@@ -903,6 +891,10 @@ const COLOR_STATE_KEYS: Record<(typeof DIRECT_COLOR_CONTROLS)[number]["id"], key
   destructive: "destructive",
   "pr-merged": "prMerged",
 };
+const TRUNCATED_COLOR_LABELS = new Set<(typeof DIRECT_COLOR_CONTROLS)[number]["id"]>([
+  "timeline-accent",
+  "attention",
+]);
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -967,8 +959,8 @@ function valuesFromComputed(computed: Computed, resolvedRadii: Record<string, st
       prMerged: color("pr-merged", DEFAULT_EDITOR_VALUES.colors.prMerged),
     },
     typography: {
-      fontSans: computed["font-sans"]?.value || DEFAULT_SANS,
-      fontMono: computed["font-mono"]?.value || DEFAULT_MONO,
+      fontSans: normalizeFontStack(computed["font-sans"]?.value, DEFAULT_SANS),
+      fontMono: normalizeFontStack(computed["font-mono"]?.value, DEFAULT_MONO),
       textScale: clamp(textScale, 0.9, 1.1),
       lineHeight: clamp(lineHeight, 0.9, 1.15),
     },
@@ -1008,8 +1000,8 @@ function SliderField({ specimen, label, value, min, max, step, unit, displayValu
 }) {
   const formatted = displayValue?.(value) ?? `${Number.isInteger(value) ? value : Number(value.toFixed(3))}${unit}`;
   return (
-    <div data-tp-specimen={specimen} style={{ minWidth: 0, padding: "3px 0" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+    <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateRows: `18px ${SHEET_SIZE.field}px`, minWidth: 0, padding: "2px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span data-tp-role="label" style={{ ...TEXT_LABEL, flex: 1, minWidth: 0 }}>{label}</span>
         <span data-tp-role="value" style={TEXT_VALUE}>{formatted}</span>
       </div>
@@ -1020,7 +1012,7 @@ function SliderField({ specimen, label, value, min, max, step, unit, displayValu
         step={step}
         value={[value]}
         disabled={disabled}
-        className="h-7 cursor-pointer disabled:cursor-not-allowed"
+        className="h-7 cursor-pointer disabled:cursor-not-allowed disabled:opacity-100"
         onValueChange={(next) => onChange(next[0] ?? value)}
         onValueCommit={(next) => onCommit(next[0] ?? value)}
       />
@@ -1038,10 +1030,10 @@ function FontField({ specimen, label, value, options, disabled, onChange }: {
 }) {
   const selectedLabel = options.find((option) => option.value === value)?.label ?? (firstFamily(value) || "Current");
   return (
-    <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateColumns: "54px minmax(0, 1fr)", alignItems: "center", gap: 6, minHeight: 32 }}>
+    <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", alignItems: "center", gap: SHEET_SPACE.control, minHeight: SHEET_SIZE.fontRow }}>
       <span data-tp-role="label" style={TEXT_LABEL}>{label}</span>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
-        <SelectTrigger aria-label={label} className="h-7 min-w-0 px-2 text-xs" style={{ fontFamily: value }}>
+        <SelectTrigger aria-label={label} className="h-7 min-w-0 px-2 text-xs disabled:opacity-100" style={{ fontFamily: value }}>
           <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{selectedLabel}</span>
         </SelectTrigger>
         <SelectContent>
@@ -1061,31 +1053,47 @@ const TYPE_STEPS = [
 
 function TypeSteps({ typography }: { typography: TypographyValues }) {
   return (
-    <div data-tp-derived="type-steps" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 3, marginTop: 4 }}>
+    <div data-tp-derived="type-steps" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: SHEET_SPACE.inline, marginTop: SHEET_SPACE.control }}>
       {TYPE_STEPS.map((step) => (
-        <span key={step.id} title={`${step.id} · ${(step.size * typography.textScale).toFixed(1)} / ${(step.line * typography.lineHeight).toFixed(1)}px`} style={{ minWidth: 0, padding: "3px 4px", borderRadius: RADIUS_MD, background: v("surface-recessed-soft-solid", v("card")), textAlign: "center", overflow: "hidden" }}>
+        <span key={step.id} title={`${step.id} · ${(step.size * typography.textScale).toFixed(1)} / ${(step.line * typography.lineHeight).toFixed(1)}px`} style={{ display: "grid", alignContent: "center", minWidth: 0, minHeight: SHEET_SIZE.typePreview, padding: "2px 4px", borderRadius: RADIUS_MD, background: v("surface-recessed-soft-solid", v("card")), textAlign: "center", overflow: "hidden" }}>
           <span style={{ display: "block", fontFamily: typography.fontSans, fontSize: clamp(step.size * typography.textScale, 9, 17), lineHeight: `${step.line * typography.lineHeight}px` }}>Aa</span>
-          <span style={{ ...TEXT_VALUE, fontFamily: typography.fontMono, fontSize: 9 }}>{step.id}</span>
+          <span style={{ ...TEXT_VALUE, fontFamily: typography.fontMono }}>{step.id}</span>
         </span>
       ))}
     </div>
   );
 }
 
-function ContrastFloor({ colors }: { colors: DirectColors }) {
+function BaseContrast({ colors }: { colors: DirectColors }) {
   const canvas = contrastRatio(hexToRgb(colors.ink), hexToRgb(colors.canvas));
   const sidebar = contrastRatio(hexToRgb(colors.sidebarForeground), hexToRgb(colors.sidebar), hexToRgb(colors.canvas));
-  const item = (label: string, ratio: number | null) => (
+  const textAccents = [colors.timelineAccent, colors.success, colors.warning, colors.prMerged]
+    .map((color) => contrastRatio(hexToRgb(color), hexToRgb(colors.canvas)))
+    .filter((ratio): ratio is number => ratio !== null);
+  const controls = [colors.primary, colors.attention, colors.destructive]
+    .map((color) => contrastRatio(hexToRgb(color), hexToRgb(colors.canvas)))
+    .filter((ratio): ratio is number => ratio !== null);
+  const lowest = (ratios: number[]) => ratios.length > 0 ? Math.min(...ratios) : null;
+  const item = (label: string, ratio: number | null, minimum = 4.5) => (
     <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
       <span style={{ ...TEXT_SUPPORT }}>{label}</span>
-      <Badge tone={ratio === null || ratio >= 4.5 ? "success" : "destructive"}>{ratio === null ? "—" : `${ratio.toFixed(1)}:1`}</Badge>
+      <Badge tone={ratio === null || ratio >= minimum ? "success" : "destructive"}>{ratio === null ? "—" : `${ratio.toFixed(1)}:1`}</Badge>
     </span>
   );
   return (
-    <div data-tp-contrast-floor="" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 28, marginTop: 4 }}>
-      <span data-tp-role="label" style={TEXT_LABEL}>Contrast floor</span>
+    <div
+      data-tp-base-contrast=""
+      style={{
+        display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 12, rowGap: 6,
+        minHeight: 34, marginTop: 8, padding: "5px 8px", borderRadius: RADIUS_MD,
+        background: v("surface-recessed-soft-solid", v("card")),
+      }}
+    >
+      <span data-tp-role="label" style={TEXT_LABEL}>Theme safety</span>
       {item("Canvas / ink", canvas)}
       {item("Sidebar", sidebar)}
+      {item("Text accents", lowest(textAccents))}
+      {item("Controls", lowest(controls), 3)}
     </div>
   );
 }
@@ -1094,20 +1102,20 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
   values: DirectColors;
   disabled: boolean;
   onChange: (values: DirectColors) => void;
-  onCommit: (family: ColorFamily, values: DirectColors) => void;
+  onCommit: (target: ColorTarget, values: DirectColors) => void;
 }) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pending = useRef<{ family: ColorFamily; values: DirectColors } | null>(null);
+  const pending = useRef<{ target: ColorTarget; values: DirectColors } | null>(null);
   const flush = () => {
     if (timer.current !== undefined) clearTimeout(timer.current);
     timer.current = undefined;
     const next = pending.current;
     pending.current = null;
-    if (next) onCommit(next.family, next.values);
+    if (next) onCommit(next.target, next.values);
   };
-  const schedule = (family: ColorFamily, next: DirectColors) => {
+  const schedule = (target: ColorTarget, next: DirectColors) => {
     if (timer.current !== undefined) clearTimeout(timer.current);
-    pending.current = { family, values: next };
+    pending.current = { target, values: next };
     timer.current = setTimeout(flush, 120);
   };
   useEffect(() => () => {
@@ -1115,31 +1123,37 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
   }, []);
   return (
     <div data-tp-block="colors">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", columnGap: 18, rowGap: 2 }}>
-        {DIRECT_COLOR_CONTROLS.map((control) => {
-          const key = COLOR_STATE_KEYS[control.id];
-          return (
-            <label key={control.id} data-tp-specimen={`color:${control.id}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 34 }}>
-              <span data-tp-role="label" style={{ ...TEXT_LABEL, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{control.label}</span>
-              <BbInput
-                type="color"
-                aria-label={`${control.label} color`}
-                value={values[key].slice(0, 7)}
-                disabled={disabled}
-                className="h-7 w-9 cursor-pointer p-1 disabled:cursor-not-allowed"
-                onChange={(event) => {
-                  const next = { ...values, [key]: event.target.value };
-                  onChange(next);
-                  schedule(control.family, next);
-                }}
-                onBlur={flush}
-              />
-              <span data-tp-role="value" style={{ ...TEXT_VALUE, textAlign: "right" }}>{values[key].slice(0, 7)}</span>
-            </label>
-          );
-        })}
-      </div>
-      <ContrastFloor colors={values} />
+      <TooltipProvider delayDuration={300}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(196px, 1fr))", columnGap: SHEET_SPACE.group, rowGap: SHEET_SPACE.inline }}>
+          {DIRECT_COLOR_CONTROLS.map((control) => {
+            const key = COLOR_STATE_KEYS[control.id];
+            return (
+              <div
+                key={control.id}
+                data-tp-specimen={`color:${control.id}`}
+                style={COLOR_CONTROL_LAYOUT}
+              >
+                <TruncatedControlLabel truncated={TRUNCATED_COLOR_LABELS.has(control.id)}>{control.label}</TruncatedControlLabel>
+                <BbInput
+                  type="color"
+                  aria-label={`${control.label} color`}
+                  value={values[key].slice(0, 7)}
+                  disabled={disabled}
+                  className={EDITOR_COLOR_INPUT_CLASS}
+                  onChange={(event) => {
+                    const next = { ...values, [key]: event.target.value };
+                    onChange(next);
+                    schedule(control.id, next);
+                  }}
+                  onBlur={flush}
+                />
+                <span data-tp-role="value" style={TEXT_VALUE}>{values[key].slice(0, 7)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </TooltipProvider>
+      <BaseContrast colors={values} />
     </div>
   );
 }
@@ -1147,46 +1161,13 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
 function RadiusPreviews({ value }: { value: number }) {
   const ladder = [Math.max(0, value - 4), Math.max(0, value - 2), value, value + 4];
   return (
-    <div data-tp-derived="radius-ladder" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 4, marginTop: 7 }}>
+    <div data-tp-derived="radius-ladder" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: SHEET_SPACE.inline, marginTop: SHEET_SPACE.control }}>
       {RADIUS_SPECIMENS.map((specimen, index) => (
-        <span key={specimen.id} title={`${specimen.title} · ${ladder[index]}px`} style={{ height: 31, borderRadius: ladder[index], background: v("surface-recessed-soft-solid", v("card")), boxShadow: `inset 0 0 0 1px ${v("border")}`, display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>
+        <span key={specimen.id} title={`${specimen.title} · ${ladder[index]}px`} style={{ height: SHEET_SIZE.radiusPreview, borderRadius: ladder[index], background: v("surface-recessed-soft-solid", v("card")), boxShadow: `inset 0 0 0 1px ${v("border")}`, display: "grid", placeItems: "center", ...TEXT_VALUE }}>
           {ladder[index]}
         </span>
       ))}
     </div>
-  );
-}
-
-const SHADOW_LADDER = ["shadow-2xs", "shadow-xs", "shadow-sm", "shadow", "shadow-md", "shadow-lift", "shadow-lg", "shadow-xl", "shadow-2xl"] as const;
-
-function DerivedValues({ computed }: { computed: Computed }) {
-  return (
-    <Collapsible defaultOpen={false}>
-      <CollapsibleTrigger asChild>
-        <BbButton data-tp-derived-trigger="" variant="ghost" size="sm" className="group h-8 w-full cursor-pointer justify-start px-2 text-xs">
-          <Icon name="ChevronRight" className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-          Derived values
-        </BbButton>
-      </CollapsibleTrigger>
-      <CollapsibleContent data-tp-derived-values="" style={{ paddingTop: 8 }}>
-        <SpecimenGrid min={250}>
-          {COLOR_GROUPS.map((group) => (
-            <SpecimenBlock key={group.id} id={`derived-${group.id}`} title={group.title}>
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {group.tokens.map((token) => <TokenRow key={token} name={token} computed={computed} {...colorGroupRowProps(group.contrast, token)} />)}
-              </div>
-            </SpecimenBlock>
-          ))}
-          <SpecimenBlock id="derived-shadow" title="Shadow ladder" wide>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(78px, 1fr))", gap: 8 }}>
-              {SHADOW_LADDER.map((token) => (
-                <div key={token} style={{ minWidth: 0, height: 42, borderRadius: RADIUS_MD, background: v("card"), boxShadow: v(token), display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>{token.replace("shadow-", "")}</div>
-              ))}
-            </div>
-          </SpecimenBlock>
-        </SpecimenGrid>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 
@@ -1380,7 +1361,7 @@ function OverlaySpecimens({ vertical = false }: { vertical?: boolean }) {
 function SystemBlock({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <div data-tp-block={id} style={{ minWidth: 0 }}>
-      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: 7 }}>{title}</h3>
+      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, minHeight: 16, marginBottom: SHEET_SPACE.control }}>{title}</h3>
       {children}
     </div>
   );
@@ -1439,13 +1420,13 @@ function RhythmEditor({ value, disabled, onChange, onCommit }: {
       <SliderField specimen="rhythm:tracking" label="Tracking" value={value.tracking} min={-0.04} max={0.08} step={0.005} unit="em" disabled={disabled} onChange={(next) => update("tracking", next, false)} onCommit={(next) => update("tracking", next, true)} />
       <SliderField specimen="rhythm:row-height" label="Sidebar row" value={value.rowHeight} min={24} max={40} step={1} unit="px" disabled={disabled} onChange={(next) => update("rowHeight", next, false)} onCommit={(next) => update("rowHeight", next, true)} />
       <SliderField specimen="rhythm:icon-stroke" label="Icon stroke" value={value.iconStroke} min={1} max={2.5} step={0.05} unit="" disabled={disabled} onChange={(next) => update("iconStroke", next, false)} onCommit={(next) => update("iconStroke", next, true)} />
-      <div data-tp-derived="row-previews" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 5, marginTop: 5 }}>
+      <div data-tp-derived="row-previews" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: SHEET_SPACE.control, marginTop: SHEET_SPACE.control }}>
         {([
           ["Pointer", value.rowHeight],
           ["Touch", Math.max(40, value.rowHeight + 12)],
         ] as const).map(([label, height]) => (
           <div key={label} style={{ minWidth: 0 }}>
-            <div style={{ ...TEXT_VALUE, fontSize: 9.5, marginBottom: 3 }}>{label} · {height}px</div>
+            <div style={{ ...TEXT_VALUE, marginBottom: SHEET_SPACE.inline }}>{label} · {height}px</div>
             <div style={{ height, minHeight: 24, maxHeight: 52, display: "flex", alignItems: "center", gap: value.density * 1.25, padding: `0 ${value.density * 1.5}px`, borderRadius: RADIUS_MD, background: v("sidebar"), color: v("sidebar-foreground"), boxShadow: `inset 0 0 0 1px ${v("sidebar-border", v("border"))}`, overflow: "hidden" }}>
               <Icon name="MessageSquare" style={{ width: 12, height: 12, strokeWidth: value.iconStroke }} />
               <span style={{ ...TEXT_LABEL, color: "inherit", fontSize: 10.5, letterSpacing: `${value.tracking}em`, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Theme preview</span>
@@ -1499,15 +1480,15 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
     <SystemBlock id="shadow" title="Shadow">
       <SliderField specimen="shadow:y" label="Y" value={value.y} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("y", next, false)} onCommit={(next) => update("y", next, true)} />
       <SliderField specimen="shadow:blur" label="Blur" value={value.blur} min={0} max={48} step={1} unit="px" disabled={disabled} onChange={(next) => update("blur", next, false)} onCommit={(next) => update("blur", next, true)} />
-      <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginTop: 4 }}>Color + opacity · {mode}</div>
-      <label data-tp-specimen="shadow:color" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 36px 62px", alignItems: "center", gap: 6, minHeight: 32 }}>
+      <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginTop: SHEET_SPACE.inline }}>Color + opacity · {mode}</div>
+      <div data-tp-specimen="shadow:color" style={COLOR_CONTROL_LAYOUT}>
         <span data-tp-role="label" style={TEXT_LABEL}>Color</span>
         <BbInput
           type="color"
           aria-label="Shadow color"
           value={value.color.slice(0, 7)}
           disabled={disabled}
-          className="h-7 w-9 cursor-pointer p-1 disabled:cursor-not-allowed"
+          className={EDITOR_COLOR_INPUT_CLASS}
           onChange={(event) => {
             const next = { ...value, color: event.target.value };
             onChange(next);
@@ -1517,29 +1498,23 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
           }}
           onBlur={flushColor}
         />
-        <span data-tp-role="value" style={{ ...TEXT_VALUE, textAlign: "right" }}>{value.color.slice(0, 7)}</span>
-      </label>
-      <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", next, false)} onCommit={(next) => update("opacity", next, true)} />
-      <div data-tp-shadow-preview="" style={{ height: 42, margin: "5px 9px 7px", borderRadius: RADIUS_MD, background: v("card"), boxShadow: `${value.x}px ${value.y}px ${value.blur}px ${value.spread}px color-mix(in oklab, ${value.color} ${value.opacity}%, transparent)`, display: "grid", placeItems: "center", ...TEXT_VALUE, fontSize: 9.5 }}>
-        Preview
+        <span data-tp-role="value" style={TEXT_VALUE}>{value.color.slice(0, 7)}</span>
       </div>
-      <Collapsible defaultOpen={false}>
-        <CollapsibleTrigger asChild>
-          <BbButton variant="ghost" size="sm" className="group h-7 w-full cursor-pointer justify-start px-1.5 text-xs text-muted-foreground">
-            <Icon name="ChevronRight" className="size-3 transition-transform group-data-[state=open]:rotate-90" />
-            Advanced geometry
-          </BbButton>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SliderField specimen="shadow:x" label="X" value={value.x} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("x", next, false)} onCommit={(next) => update("x", next, true)} />
-          <SliderField specimen="shadow:spread" label="Spread" value={value.spread} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("spread", next, false)} onCommit={(next) => update("spread", next, true)} />
-        </CollapsibleContent>
-      </Collapsible>
+      <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", next, false)} onCommit={(next) => update("opacity", next, true)} />
+      <div data-tp-shadow-sample="" style={{ display: "flex", alignItems: "center", gap: SHEET_SPACE.control, margin: `${SHEET_SPACE.control}px 8px ${SHEET_SPACE.group}px` }}>
+        <span data-tp-role="support" style={TEXT_SUPPORT}>Live shadow</span>
+        <div data-tp-shadow-preview="" aria-label="Live shadow sample" style={{ width: 48, height: 24, flex: "0 0 auto", borderRadius: RADIUS_MD, background: v("card"), boxShadow: `${value.x}px ${value.y}px ${value.blur}px ${value.spread}px color-mix(in oklab, ${value.color} ${value.opacity}%, transparent)` }} />
+      </div>
+      <div data-tp-advanced-geometry="">
+        <h4 data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, margin: `0 0 ${SHEET_SPACE.control}px` }}>Advanced geometry</h4>
+        <SliderField specimen="shadow:x" label="X" value={value.x} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("x", next, false)} onCommit={(next) => update("x", next, true)} />
+        <SliderField specimen="shadow:spread" label="Spread" value={value.spread} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("spread", next, false)} onCommit={(next) => update("spread", next, true)} />
+      </div>
     </SystemBlock>
   );
 }
 
-/** Area 2 — direct controls first; large derived families stay collapsed. */
+/** Area 2 — direct controls first, followed by their always-visible derived values. */
 function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommit }: {
   computed: Computed;
   radii: Record<string, string>;
@@ -1550,31 +1525,33 @@ function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommi
 }) {
   const [values, setValues] = useState<EditorValues>(DEFAULT_EDITOR_VALUES);
   const ready = Boolean(computed.canvas?.value && computed.ink?.value);
-  useEffect(() => {
-    if (ready) setValues(valuesFromComputed(computed, radii));
-  }, [computed, radii, ready, resetRevision]);
+  const radiiRef = useRef(radii);
+  radiiRef.current = radii;
+  useLayoutEffect(() => {
+    if (ready) setValues(valuesFromComputed(computed, radiiRef.current));
+    // Resolved radius specimens update on their own timer. Their identity is
+    // not an editor-value revision and must not overwrite an optimistic edit.
+  }, [computed, ready, resetRevision]);
   const disabled = busy || !ready;
   const setTypography = (typography: TypographyValues) => setValues((current) => ({ ...current, typography }));
   const setRhythm = (rhythm: RhythmValues) => setValues((current) => ({ ...current, rhythm }));
   const setShadow = (shadow: ShadowValues) => setValues((current) => ({ ...current, shadow }));
   return (
     <div aria-busy={busy || undefined}>
-      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 7 }}>Mode colors</h3>
+      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: SHEET_SPACE.control }}>Mode colors</h3>
       <ColorEditor
         values={values.colors}
         disabled={disabled}
         onChange={(colors) => setValues((current) => ({ ...current, colors }))}
-        onCommit={(family, colors) => onCommit({ kind: "colors", family, ...colors })}
+        onCommit={(target, colors) => onCommit({ kind: "colors", target, ...colors })}
       />
 
-      <div data-tp-block="systems" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(225px, 1fr))", gap: 18, alignItems: "start", marginTop: 14, marginBottom: 10 }}>
+      <div data-tp-block="systems" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(225px, 1fr))", columnGap: 18, rowGap: SHEET_SPACE.section, alignItems: "start", marginTop: SHEET_SPACE.section, marginBottom: SHEET_SPACE.group }}>
         <TypographyEditor value={values.typography} disabled={disabled} onChange={setTypography} onCommit={(typography) => onCommit({ kind: "typography", ...typography })} />
         <RhythmEditor value={values.rhythm} disabled={disabled} onChange={setRhythm} onCommit={(rhythm) => onCommit({ kind: "rhythm", ...rhythm })} />
         <RadiusEditor value={values.radius} disabled={disabled} onChange={(radius) => setValues((current) => ({ ...current, radius }))} onCommit={(value) => onCommit({ kind: "radius", value })} />
         <ShadowEditor value={values.shadow} mode={mode} disabled={disabled} onChange={setShadow} onCommit={(shadow) => onCommit({ kind: "shadow", ...shadow })} />
       </div>
-
-      <DerivedValues computed={computed} />
     </div>
   );
 }
@@ -1586,18 +1563,19 @@ function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommi
  */
 function ComponentsSection() {
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("endless");
   const [notify, setNotify] = useState(true);
   const [compact, setCompact] = useState(false);
   const [checked, setChecked] = useState(true);
   const [agreed, setAgreed] = useState(false);
   const compactBlock = (wide = false): CSSProperties => ({ minWidth: 0, gridColumn: wide ? "1 / -1" : undefined });
+  const toggleBlock: CSSProperties = { ...compactBlock(), paddingBlock: SHEET_SPACE.group };
+  const toggleControls: CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
   const compactLabel: CSSProperties = { ...TEXT_LABEL, minWidth: 0, fontSize: 11.5, lineHeight: "16px" };
   return (
-    <div data-tp-components="" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", columnGap: 4, rowGap: 14 }}>
+    <div data-tp-components="" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", columnGap: 16, rowGap: 16, alignItems: "start" }}>
       <div data-tp-block="buttons" style={compactBlock(true)}>
-        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Buttons</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 4 }}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Buttons</h3>
+        <div data-tp-button-grid="" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
           <BbButton size="sm" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Default</BbButton>
           <BbButton size="sm" variant="secondary" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Secondary</BbButton>
           <BbButton size="sm" variant="outline" className="h-7 min-w-0 cursor-pointer px-2 text-xs">Outline</BbButton>
@@ -1607,23 +1585,22 @@ function ComponentsSection() {
         </div>
       </div>
       <div data-tp-block="badges" style={compactBlock(true)}>
-        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Badges</h3>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Badges</h3>
+        <div data-tp-badge-row="" style={{ display: "flex", flexWrap: "nowrap", gap: 4, alignItems: "center", overflowX: "auto" }}>
           <Badge tone="success"><Dot color={v("success")} size={6} /> Running</Badge><Badge tone="warning">Attention</Badge>
           <Badge tone="destructive">Failed</Badge><Badge tone="merged">Merged</Badge><Badge tone="outline">branch</Badge>
         </div>
       </div>
       <div data-tp-block="inputs" style={compactBlock(true)}>
-        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Inputs</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Inputs</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <BbInput className="h-7 px-2 text-xs" aria-label="Search threads" placeholder="Search threads…" value={search} onChange={(event) => setSearch(event.target.value)} />
-          <BbInput className="h-7 px-2 text-xs" aria-label="Filter" value={filter} onChange={(event) => setFilter(event.target.value)} />
           <BbInput className="h-7 px-2 text-xs" aria-label="Disabled input" value="Disabled" disabled readOnly />
         </div>
       </div>
-      <div data-tp-block="switch" style={compactBlock()}>
-        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Switch</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      <div data-tp-block="switch" style={toggleBlock}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Switch</h3>
+        <div data-tp-toggle-controls="" style={toggleControls}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbSwitch checked={notify} onCheckedChange={setNotify} className="cursor-pointer" /> Notifications
           </label>
@@ -1635,9 +1612,9 @@ function ComponentsSection() {
           </label>
         </div>
       </div>
-      <div data-tp-block="checkbox" style={compactBlock()}>
-        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 6 }}>Checkbox</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      <div data-tp-block="checkbox" style={toggleBlock}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: 8 }}>Checkbox</h3>
+        <div data-tp-toggle-controls="" style={toggleControls}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", ...compactLabel }}>
             <BbCheckbox checked={checked} onCheckedChange={(next) => setChecked(next === true)} className="cursor-pointer" /> Include drafts
           </label>
@@ -1657,15 +1634,15 @@ function ComponentsSection() {
 function StageRail() {
   return (
     <>
-      <section data-tp-area="overlays" aria-labelledby="tp-overlays-heading" style={{ minWidth: 0, paddingBottom: 14 }}>
+      <section data-tp-area="overlays" aria-labelledby="tp-overlays-heading" style={{ minWidth: 0, paddingBottom: space(4) }}>
         <AreaHeading area="overlays" />
-        <div style={{ marginTop: 8 }}>
+        <div style={{ marginTop: space(3) }}>
           <OverlaySpecimens vertical />
         </div>
       </section>
-      <section data-tp-area="components" aria-labelledby="tp-components-heading" style={{ minWidth: 0, paddingTop: 14, borderTop: `1px solid ${v("border-seam", v("border"))}` }}>
+      <section data-tp-area="components" aria-labelledby="tp-components-heading" style={{ minWidth: 0, paddingTop: space(4), borderTop: `1px solid ${v("border-seam", v("border"))}` }}>
         <AreaHeading area="components" />
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: space(3) }}>
           <ComponentsSection />
         </div>
       </section>
@@ -1771,7 +1748,7 @@ function ModeSwitch({ mode, disabled, onPick }: { mode: Mode; disabled: boolean;
               "flex h-6 w-7 cursor-pointer items-center justify-center rounded-sm transition-colors",
               "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               active && "bg-accent text-accent-foreground",
-              disabled && "cursor-not-allowed opacity-50",
+              disabled && "cursor-not-allowed",
             )}
           >
             <span
@@ -1786,6 +1763,93 @@ function ModeSwitch({ mode, disabled, onPick }: { mode: Mode; disabled: boolean;
         );
       })}
     </div>
+  );
+}
+
+// BB keeps reversible lifecycle feedback available for ten seconds. The bell
+// is a compact, temporary locus for the automatic fork notice; its tooltip
+// opens immediately, then remains keyboard- and pointer-discoverable until the
+// exact fork-only undo token expires from this surface.
+const FORK_NOTICE_DURATION_MS = 10_000;
+
+function ThemeForkNotice({
+  notice,
+  busy,
+  error,
+  onExpire,
+  onUndo,
+}: {
+  notice: ForkNotice;
+  busy: boolean;
+  error: string | null;
+  onExpire: () => void;
+  onUndo: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const expireRef = useRef(onExpire);
+  expireRef.current = onExpire;
+
+  useEffect(() => {
+    setOpen(true);
+  }, [notice.undoToken, error]);
+
+  useEffect(() => {
+    if (busy) return;
+    const timer = setTimeout(() => expireRef.current(), FORK_NOTICE_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [notice.undoToken, busy]);
+
+  const accessibleName = `Theme copy created: ${notice.copyName}. Press Enter or Space to undo`;
+  return (
+    <TooltipProvider delayDuration={HOVER_OPEN_DELAY_MS}>
+      <Tooltip open={open} onOpenChange={setOpen}>
+        <TooltipTrigger asChild>
+          <BbButton
+            data-tp-fork-notice=""
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label={accessibleName}
+            className="relative size-8 shrink-0 cursor-pointer"
+            onClick={(event) => {
+              // Native keyboard and assistive-technology activation produces
+              // a click with detail 0. Keep the compact bell's keyboard intent
+              // explicit because an interactive tooltip is not a reliable Tab
+              // stop; pointer activation still reveals or dismisses its detail.
+              if (event.detail === 0) {
+                onUndo();
+                return;
+              }
+              setOpen((current) => !current);
+            }}
+          >
+            <HugeiconsIcon icon={Notification02Icon} className="size-4" />
+            <span aria-hidden className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-success" />
+          </BbButton>
+        </TooltipTrigger>
+        <TooltipContent
+          data-tp-fork-tooltip=""
+          side="bottom"
+          align="end"
+          className="w-64 p-3"
+          onPointerEnter={() => setOpen(true)}
+        >
+          <div className="text-xs font-medium">Created {notice.copyName}</div>
+          <div className="mt-1 text-xs opacity-80">Now editing the copy. {notice.sourceName} is unchanged.</div>
+          <BbButton
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="mt-2 h-7 cursor-pointer px-2 text-xs"
+            disabled={busy}
+            onClick={onUndo}
+          >
+            {busy ? "Undoing…" : "Undo"}
+          </BbButton>
+          {error ? <div role="alert" className="mt-2 text-xs">{error}</div> : null}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -1850,7 +1914,7 @@ function ThemePicker({
             aria-busy={unavailable}
             aria-label={accessibleName}
             disabled={unavailable || loading}
-            className="h-8 w-auto min-w-36 max-w-52 gap-2 text-sm"
+            className="h-8 w-auto min-w-36 max-w-52 gap-2 text-sm disabled:opacity-100"
           >
             <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
               <Chips swatch={currentSwatch} w={6} h={11} />
@@ -1936,6 +2000,10 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const [selectionSlow, setSelectionSlow] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
   const [editResetRevision, setEditResetRevision] = useState(0);
+  const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
+  const [forkUndoPending, setForkUndoPending] = useState(false);
+  const [forkUndoError, setForkUndoError] = useState<string | null>(null);
+  const [forkAnnouncement, setForkAnnouncement] = useState("");
   const catalogRequests = useRef(new LatestRequest());
   const selectionPending = useRef(false);
   const editingPending = useRef(false);
@@ -2025,6 +2093,10 @@ function PreviewPage({ subPath }: { subPath: string }) {
 
   const applySelection = (selection: ThemeSelection) => {
     if (selectionPending.current) return;
+    if (forkNotice && selection.themeId !== forkNotice.themeId) {
+      setForkNotice(null);
+      setForkUndoError(null);
+    }
     setMode(selection.mode);
     // Always send the explicit choice. The catalog reflects the last completed
     // apply, so it can be stale while a slower selection is still in flight.
@@ -2057,6 +2129,10 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const commitEdit = (edit: ThemeEdit) => {
     const themeId = catalog.activeThemeId;
     if (!themeId || selectionPending.current || editingPending.current) return;
+    if (forkNotice?.themeId === themeId) {
+      setForkNotice(null);
+      setForkUndoError(null);
+    }
     editingPending.current = true;
     setEditBusy(true);
     setError(null);
@@ -2065,14 +2141,19 @@ function PreviewPage({ subPath }: { subPath: string }) {
       .then((result) => {
         if (!catalogRequests.current.isLatest(request)) return;
         commitCatalog(result.catalog, setCatalog);
-        if (result.forkedFrom) {
+        if (result.forkedFrom && result.undoToken) {
           const copy = result.catalog.themes.find((theme) => theme.id === result.themeId);
           const source = catalog.themes.find((theme) => theme.id === result.forkedFrom);
           const copyName = copy?.name ?? "theme copy";
           const sourceName = source?.name ?? "The source theme";
-          toast.success(`Created ${copyName}`, {
-            description: `Now editing ${copyName}. ${sourceName} is unchanged.`,
+          setForkUndoError(null);
+          setForkNotice({
+            copyName,
+            sourceName,
+            themeId: result.themeId,
+            undoToken: result.undoToken,
           });
+          setForkAnnouncement(`Created ${copyName}. ${sourceName} is unchanged. Undo is available from the notification button.`);
         }
       })
       .catch((cause) => {
@@ -2088,11 +2169,42 @@ function PreviewPage({ subPath }: { subPath: string }) {
       });
   };
 
+  const undoFork = () => {
+    const notice = forkNotice;
+    if (!notice || forkUndoPending || selectionPending.current || editingPending.current) return;
+    editingPending.current = true;
+    setForkUndoPending(true);
+    setEditBusy(true);
+    setForkUndoError(null);
+    const request = catalogRequests.current.begin();
+    withRpcTimeout(rpc.call("undoThemeFork", { undoToken: notice.undoToken }), "Undo theme copy")
+      .then((next) => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        commitCatalog(next, setCatalog);
+        setEditResetRevision((current) => current + 1);
+        setForkNotice(null);
+        setForkAnnouncement(`Removed ${notice.copyName}. Restored ${notice.sourceName}.`);
+      })
+      .catch((cause) => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setForkUndoError(message);
+        setForkAnnouncement(`Could not undo ${notice.copyName}. ${message}`);
+      })
+      .finally(() => {
+        if (!catalogRequests.current.isLatest(request)) return;
+        editingPending.current = false;
+        setForkUndoPending(false);
+        setEditBusy(false);
+        if (catalogLoadQueued.current) loadRef.current();
+      });
+  };
+
   const revision = `${mode}:${catalog.activeThemeId ?? ""}:${catalog.revision}`;
   const computed = useComputedTokens(ALL_TOKENS, revision);
   const radii = useResolvedRadii(revision);
   const mobile = layout.band === "mobile";
-  const railWidth = layout.band === "narrow" ? surfaceRailWidth(layout.width) : 276;
+  const railWidth = layout.band === "narrow" ? surfaceRailWidth(layout.width) : SURFACE_RAIL_WIDTH;
   const contentInset = contentInsetForWidth(layout.width);
   const displayThemeId = pendingSelection?.themeId ?? catalog.activeThemeId;
   const displayThemeName = catalog.themes.find((theme) => theme.id === displayThemeId)?.name ?? "Current theme";
@@ -2100,7 +2212,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
   return (
     <div ref={rootRef} data-tp-root data-tp-band={layout.band} style={{ height: "100%", overflowY: "auto", overflowX: "hidden", background: v("canvas", v("background")), color: v("foreground"), fontFamily: SANS, letterSpacing: v("tracking-normal", "0em") }}>
       <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 20, borderBottom: `1px solid ${v("border-seam", v("border"))}`, background: v("canvas", v("background")) }}>
-        <div data-tp-header-inner="" style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: space(2), gap: space(2), padding: `${space(2)} ${contentInset}px` }}>
+        <div data-tp-header-inner="" style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: space(2), gap: space(2), padding: `${space(3)} ${contentInset}px` }}>
           <Tabs value={view} onValueChange={(next) => navigate.toPluginPanel("preview", { subPath: next })}>
             <TabsList data-tp-view-control="" aria-label="Preview view" className={cn(mobile && "w-full")}>
               {VIEWS.map((item) => (
@@ -2112,7 +2224,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
           </Tabs>
           <div style={{ flex: 1 }} />
           {error ? <span style={{ fontSize: 12, color: v("destructive-text", v("destructive")) }}>{error}</span> : null}
-          <div style={{ flex: mobile ? "1 1 100%" : "none", minWidth: 0 }}>
+          <div style={{ flex: mobile ? "1 1 100%" : "none", minWidth: 0, display: "flex", alignItems: "flex-start", justifyContent: "flex-end", gap: space(1) }}>
             <ThemePicker
               catalog={catalog}
               computed={computed}
@@ -2124,9 +2236,19 @@ function PreviewPage({ subPath }: { subPath: string }) {
               onPick={pick}
               onRetry={retrySelection}
             />
+            {forkNotice ? (
+              <ThemeForkNotice
+                notice={forkNotice}
+                busy={forkUndoPending}
+                error={forkUndoError}
+                onExpire={() => { setForkNotice(null); setForkUndoError(null); }}
+                onUndo={undoFork}
+              />
+            ) : null}
           </div>
         </div>
       </div>
+      <div data-tp-fork-status="" role="status" aria-live="polite" className="sr-only">{forkAnnouncement}</div>
 
       {/* Layout system, level 2: the plugin window. One stage zone (mock +
           at-a-glance rail on wider bands), then flow sections in taxonomy
@@ -2142,8 +2264,13 @@ function PreviewPage({ subPath }: { subPath: string }) {
             alignItems: "start",
           }}
         >
-          <div data-tp-area="mock" style={{ minWidth: 0, padding: contentInset }}>
-            <Frame view={view} themeName={displayThemeName} mode={mode} />
+          <div data-tp-area="mock" style={{ minWidth: 0 }}>
+            <div
+              data-tp-mock-container=""
+              style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", padding: contentInset }}
+            >
+              <Frame view={view} themeName={displayThemeName} mode={mode} />
+            </div>
           </div>
           {mobile ? null : (
             <div
@@ -2164,9 +2291,9 @@ function PreviewPage({ subPath }: { subPath: string }) {
         ? (["overlays", "components", "stylesheet"] as const)
         : (["stylesheet"] as const)
       ).map((area) => (
-        <section key={area} data-tp-area={area} aria-labelledby={`tp-${area}-heading`} style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", scrollMarginTop: headerHeight + 12, padding: `${space(4)} ${contentInset}px ${space(1)}` }}>
+        <section key={area} data-tp-area={area} aria-labelledby={`tp-${area}-heading`} style={{ width: "100%", maxWidth: STUDIO_MAX_WIDTH, margin: "0 auto", boxSizing: "border-box", scrollMarginTop: headerHeight + 12, padding: `${space(5)} ${contentInset}px ${space(3)}` }}>
           <AreaHeading area={area} />
-          <div style={{ marginTop: area === "stylesheet" ? 12 : 10 }}>
+          <div style={{ marginTop: space(3) }}>
             {area === "overlays" ? <OverlaySpecimens vertical />
               : area === "components" ? <ComponentsSection />
               : <StyleSheetSection computed={computed} radii={radii} mode={mode} busy={editBusy} resetRevision={editResetRevision} onCommit={commitEdit} />}

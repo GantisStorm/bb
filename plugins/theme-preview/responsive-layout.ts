@@ -2,6 +2,7 @@ export type LayoutBand = "mobile" | "narrow" | "desktop";
 
 export const MOBILE_MAX_WIDTH = 599;
 export const DESKTOP_MIN_WIDTH = 1200;
+export const SURFACE_RAIL_WIDTH = 340;
 
 export function layoutBandForWidth(width: number): LayoutBand {
   if (width <= MOBILE_MAX_WIDTH) return "mobile";
@@ -9,12 +10,16 @@ export function layoutBandForWidth(width: number): LayoutBand {
   return "desktop";
 }
 
-export function surfaceRailWidth(width: number): number {
-  return Math.min(292, Math.max(228, Math.round(width * 0.32)));
+export function surfaceRailWidth(_width: number): number {
+  // The rail contains compact controls whose badge row is intentionally
+  // single-line. Below the mobile boundary the whole rail restacks instead of
+  // squeezing those controls, so every persistent rail uses their natural
+  // minimum width.
+  return SURFACE_RAIL_WIDTH;
 }
 
 export function contentInsetForWidth(width: number): number {
-  return width < 720 ? 12 : 16;
+  return width < 720 ? 16 : 20;
 }
 
 // ---------------------------------------------------------------------------

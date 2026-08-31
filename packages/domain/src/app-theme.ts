@@ -10,10 +10,11 @@ import {
  * custom-property overrides applied app-wide, persisted server-side so the CLI
  * and Settings can both set it and every open window stays in sync.
  *
- * A palette is either a built-in id (CSS bundled in the frontend registry) or a
- * custom theme discovered on disk under `<data-dir>/theme/<name>/theme.css`. For
- * a custom palette `themeId` is the theme's directory name and the resolved CSS
- * is read from that file by the server.
+ * A palette is either a built-in id (CSS bundled in the shared theme registry)
+ * or a custom theme discovered on disk under
+ * `<data-dir>/theme/<name>/theme.css`. For a custom palette `themeId` is the
+ * theme's directory name and the resolved CSS is read from that file by the
+ * server.
  */
 const builtInThemeIdSchema = z.enum([
   "default",
@@ -33,8 +34,8 @@ interface BuiltInThemeMeta {
 
 /**
  * Built-in palette metadata, shared by the CLI (`bb theme list`) and the
- * Settings picker. The actual CSS strings live in the frontend registry; this
- * is just the id/name/description list the server validates against.
+ * Settings picker. The actual CSS strings live alongside this domain contract;
+ * this is the id/name/description list the server validates against.
  */
 export const builtInThemes: readonly BuiltInThemeMeta[] = [
   { id: "default", name: "Default", description: "The standard bb look" },
@@ -115,7 +116,9 @@ export const faviconColorPreferenceSchema = z.enum([
   "default",
   ...FAVICON_COLORS,
 ]);
-export type FaviconColorPreference = z.infer<typeof faviconColorPreferenceSchema>;
+export type FaviconColorPreference = z.infer<
+  typeof faviconColorPreferenceSchema
+>;
 
 export const defaultFaviconColor: FaviconColorPreference = "default";
 

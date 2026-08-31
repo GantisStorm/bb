@@ -1,33 +1,7 @@
-import { isBuiltInThemeId, type AppTheme, type BuiltInThemeId } from "@bb/domain";
-import { catppuccinThemeCss } from "./catppuccin";
-import { draculaThemeCss } from "./dracula";
-import { gruvboxThemeCss } from "./gruvbox";
-import { nordThemeCss } from "./nord";
-import { solarizedThemeCss } from "./solarized";
+export { resolveAppThemeCss } from "@bb/domain";
 
 const APP_THEME_STYLE_ELEMENT_ID = "bb-app-theme";
 export const APP_THEME_CSS_STORAGE_KEY = "bb.appThemeCss";
-
-/**
- * CSS overrides per built-in palette. "default" is empty so the base theme.css
- * tokens show through. Custom palettes are supplied at runtime (the server reads
- * their CSS from disk), not from this registry.
- */
-const builtInThemeCss: Record<BuiltInThemeId, string> = {
-  default: "",
-  nord: nordThemeCss,
-  dracula: draculaThemeCss,
-  solarized: solarizedThemeCss,
-  gruvbox: gruvboxThemeCss,
-  catppuccin: catppuccinThemeCss,
-};
-
-export function resolveAppThemeCss(appearance: AppTheme): string {
-  if (isBuiltInThemeId(appearance.themeId)) {
-    return builtInThemeCss[appearance.themeId];
-  }
-  return appearance.customCss ?? "";
-}
 
 function getOrCreateStyleElement(): HTMLStyleElement | null {
   if (typeof document === "undefined") return null;

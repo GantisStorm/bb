@@ -7,6 +7,7 @@ import {
   INFO_PANEL_WIDTH,
   layoutBandForWidth,
   SIDEBAR_WIDTH,
+  SURFACE_RAIL_WIDTH,
   surfaceRailWidth,
   THREAD_COMFORTABLE_WIDTH,
   THREAD_MIN_WIDTH,
@@ -21,16 +22,16 @@ describe("Theme Preview responsive layout", () => {
     expect(layoutBandForWidth(1200)).toBe("desktop");
   });
 
-  it("keeps the narrow rail useful without crowding the preview", () => {
-    expect(surfaceRailWidth(600)).toBe(228);
-    expect(surfaceRailWidth(768)).toBe(246);
-    expect(surfaceRailWidth(1199)).toBe(292);
+  it("keeps the narrow rail wide enough for compact interaction specimens", () => {
+    expect(surfaceRailWidth(600)).toBe(SURFACE_RAIL_WIDTH);
+    expect(surfaceRailWidth(768)).toBe(SURFACE_RAIL_WIDTH);
+    expect(surfaceRailWidth(1199)).toBe(SURFACE_RAIL_WIDTH);
   });
 
   it("tightens only the outer content inset near the mobile boundary", () => {
-    expect(contentInsetForWidth(600)).toBe(12);
-    expect(contentInsetForWidth(719)).toBe(12);
-    expect(contentInsetForWidth(720)).toBe(16);
+    expect(contentInsetForWidth(600)).toBe(16);
+    expect(contentInsetForWidth(719)).toBe(16);
+    expect(contentInsetForWidth(720)).toBe(20);
   });
 
   it("derives every composition threshold from the mock's natural panel widths", () => {
