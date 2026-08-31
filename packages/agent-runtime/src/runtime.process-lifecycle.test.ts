@@ -35,30 +35,20 @@ import { promptTextInput } from "./test/prompt-input.js";
 import type { AgentRuntimeBridgeLaunch, AgentRuntimeOptions } from "./types.js";
 
 interface CreateProviderProcessManagerArgs {
-  /** Extra env the adapter's own process spec carries (overlays the runtime env). */
   adapterProcessEnv?: Record<string, string>;
   env?: Record<string, string>;
   handleStdoutLine?: (line: string, childPid: number | undefined) => void;
   onStderr?: NonNullable<AgentRuntimeOptions["onStderr"]>;
   onProcessExit: NonNullable<AgentRuntimeOptions["onProcessExit"]>;
-  /**
-   * A raw script to run instead of the bridge bootstrap + scripted echo
-   * bridge: the process-manager tests are about spawn, stderr, exit and
-   * replacement mechanics, and some of them need a process that never
-   * answers the handshake at all.
-   */
   rawScriptPath?: string;
   workspacePath: string;
 }
 
-/** The codex thread-process tests share this launch: pid-stamped identities. */
-const CODEX_SCRIPT: ScriptedEchoLaunchScript = { identifyProcess: true };
+const CODEX_SCRIPT: ScriptedEchoLaunchScript = {
+  identifyProcess: true,
+  sessionRestorable: true,
+};
 
-/**
- * The launch the process-manager tests hand to `ensureProvider`. The manager
- * only forwards it to the adapter factory, and these tests inject their own
- * adapter (`createManagerAdapter`), so one shared launch serves every key.
- */
 const MANAGER_BRIDGE_LAUNCH = createScriptedEchoLaunch();
 
 describe("createAgentRuntime process lifecycle", () => {
@@ -73,12 +63,6 @@ describe("createAgentRuntime process lifecycle", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  /**
-   * The real bridge-protocol adapter for the scripted echo launch; with a
-   * `rawScriptPath` its process spec is redirected at that script (the
-   * adapter's request plans still go down the pipe, so a raw script that
-   * wants to pass startup answers `initialize` itself).
-   */
   function createManagerAdapter(
     args: Pick<
       CreateProviderProcessManagerArgs,
@@ -128,9 +112,6 @@ describe("createAgentRuntime process lifecycle", () => {
       getNextRequestId: () => nextRequestId++,
       handleStdoutLine: ({ line, providerProcess }) => {
         args.handleStdoutLine?.(line, providerProcess.child.pid);
-        // The manager owns the pipe but not the protocol: the runtime settles
-        // the handshake's response from its stdout handler, so this stand-in
-        // does the same (anything else a raw script writes is ignored).
         const parsed = parseJsonRpcLine(line);
         if (parsed.kind === "response") {
           settleJsonRpcResponse({
@@ -149,11 +130,6 @@ describe("createAgentRuntime process lifecycle", () => {
     });
   }
 
-  /**
-   * A raw process that dies during startup never answers `initialize`, so
-   * `ensureProvider` rejects; the exit callback still fires. The tests about
-   * stderr and exit mechanics only need the spawn and the exit.
-   */
   async function ensureCrashingProvider(
     manager: RuntimeProviderProcessManager,
   ): Promise<void> {
@@ -166,7 +142,6 @@ describe("createAgentRuntime process lifecycle", () => {
     ).rejects.toThrow(/exited during startup|exited/i);
   }
 
-  /** The pids a crash-once script recorded, first start first. */
   function startedPids(startsLog: string): number[] {
     return readLogLines(startsLog).map((line) => Number(line));
   }
@@ -187,8 +162,6 @@ describe("createAgentRuntime process lifecycle", () => {
       providerId: "fake",
       options: fullRuntimeOptions,
     });
-    // The bridge answers turn/start with METHOD_NOT_FOUND: the runtime
-    // surfaces the JSON-RPC error to the caller.
     await expect(
       runtime.runTurn({
         clientRequestId: "creq_222222224w",
@@ -199,8 +172,6 @@ describe("createAgentRuntime process lifecycle", () => {
     ).rejects.toThrow("Method not found");
     await runtime.shutdown();
   });
-
-  // ---- Process lifecycle ----
 
   it("fires onProcessExit when provider crashes", async () => {
     const exitInfo = vi.fn();
@@ -225,10 +196,6 @@ describe("createAgentRuntime process lifecycle", () => {
     await runtime.shutdown();
   });
 
-  // A plugin update changes the bridge artifact hash, which is part of the
-  // process key, so the new artifact spawns a fresh process. Nothing releases
-  // a threadless model-list/maintenance process, so without retirement every
-  // superseded artifact leaks a node process until daemon shutdown.
   it("retires a threadless bridge process superseded by a new artifact hash", async () => {
     const manager = createProviderProcessManager({
       onProcessExit: vi.fn(),
@@ -301,68 +268,6 @@ describe("createAgentRuntime process lifecycle", () => {
         providerId: "fake",
       }),
     ).toBe(staleProcess);
-
-    await manager.shutdown();
-  });
-
-  // The sweep above only runs when a process is ensured, so the process kept
-  // alive by its threads is never revisited. Releasing its last thread is the
-  // one moment it becomes retirable.
-  it("retires an old-hash bridge process when it loses its last thread", async () => {
-    const manager = createProviderProcessManager({
-      onProcessExit: vi.fn(),
-      workspacePath: tmpDir,
-    });
-
-    const staleKey = "fake#bridge:aaaaaaaaaaaaaaaa";
-    await manager.ensureProvider({
-      bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
-      processKey: staleKey,
-      providerId: "fake",
-    });
-    const staleProcess = manager.requireProviderProcess({
-      processKey: staleKey,
-      providerId: "fake",
-    });
-    staleProcess.identity.threadIds.add("thread-live");
-
-    await manager.ensureProvider({
-      bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
-      processKey: "fake#bridge:bbbbbbbbbbbbbbbb",
-      providerId: "fake",
-    });
-    expect(staleProcess.child.killed).toBe(false);
-
-    // Still owns the thread: releasing anything else changes nothing.
-    await manager.retireSupersededBridgeProcessIfIdle(staleProcess);
-    expect(staleProcess.child.killed).toBe(false);
-
-    staleProcess.identity.threadIds.delete("thread-live");
-    await manager.retireSupersededBridgeProcessIfIdle(staleProcess);
-    expect(staleProcess.child.killed).toBe(true);
-
-    await manager.shutdown();
-  });
-
-  it("keeps the current-hash bridge process when a thread is released", async () => {
-    const manager = createProviderProcessManager({
-      onProcessExit: vi.fn(),
-      workspacePath: tmpDir,
-    });
-
-    const currentKey = "fake#bridge:aaaaaaaaaaaaaaaa";
-    await manager.ensureProvider({
-      bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
-      processKey: currentKey,
-      providerId: "fake",
-    });
-    const providerProcess = manager.requireProviderProcess({
-      processKey: currentKey,
-      providerId: "fake",
-    });
-
-    await manager.retireSupersededBridgeProcessIfIdle(providerProcess);
-    expect(providerProcess.child.killed).toBe(false);
 
     await manager.shutdown();
   });
@@ -454,23 +359,15 @@ describe("createAgentRuntime process lifecycle", () => {
       predicate: () => exitInfo.mock.calls.length === 1,
     });
 
-    // A descendant still holds the stderr pipe open, so shutdown must not fall
-    // back to the multi-second SIGTERM/SIGKILL escalation for a process that
-    // has already exited.
     const startedAt = Date.now();
     await manager.shutdown();
 
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
-  /**
-   * A raw script that crashes on its first start and idles (answering
-   * `initialize`) on every later one, so a replacement can be ensured.
-   */
   function writeCrashOnceScript(args: {
     scriptPath: string;
     startMarker: string;
-    /** Every start (the crash and each replacement) appends its pid here. */
     startsLog: string;
     firstStartBody: string;
   }): void {
@@ -572,8 +469,6 @@ describe("createAgentRuntime process lifecycle", () => {
     });
     const [exitedPid] = startedPids(startsLog);
 
-    // Every caller waits on the same exit finalization, so each one resumes
-    // needing to re-check whether a peer already spawned the replacement.
     await Promise.all([
       manager.ensureProvider({
         bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
@@ -610,12 +505,6 @@ describe("createAgentRuntime process lifecycle", () => {
     const startMarker = join(tmpDir, "stale-descendant-output.started");
     const startsLog = join(tmpDir, "stale-descendant-output.starts");
     const writeMarker = join(tmpDir, "stale-descendant-output.wrote");
-    // The descendant keeps holding both inherited pipes past the assertions
-    // below, so the pipes can only be closed by the grace-deadline cleanup
-    // rather than by the descendant itself exiting and letting them EOF. It
-    // ignores the SIGTERM the unexpected-exit sweep sends its process group,
-    // the way a stuck grandchild would, so the cut-off is what protects the
-    // replacement's stream.
     const delayedWriter = `const fs = require("node:fs");
       const writeMarker = ${JSON.stringify(writeMarker)};
       process.on("SIGTERM", () => {});
@@ -687,7 +576,6 @@ describe("createAgentRuntime process lifecycle", () => {
       options: fullRuntimeOptions,
     });
     await runtime.shutdown();
-    // Should not hang
   });
 
   it("treats shutdown process errors as expected without carrying state to replacement processes", async () => {
@@ -755,8 +643,6 @@ describe("createAgentRuntime process lifecycle", () => {
     await manager.shutdown();
   });
 
-  // ---- Codex thread-scoped processes ----
-
   function createCodexRuntime(args: {
     events: ThreadEvent[];
     scripted?: ScriptedEchoLaunchScript;
@@ -794,9 +680,6 @@ describe("createAgentRuntime process lifecycle", () => {
       providerId: "codex",
       options: fullRuntimeOptions,
     });
-    // One process per provider artifact: the bridge supervises its own
-    // per-thread children (see runtime.codex-topology.test.ts for the real
-    // codex bridge); the runtime never scopes a process to a thread.
     expect(
       processLog.read().filter((line) => line.startsWith("spawn:")),
     ).toHaveLength(1);
@@ -836,8 +719,6 @@ describe("createAgentRuntime process lifecycle", () => {
       text: "second",
       threadId: "t2",
     });
-    // Each answer carries the pid of the process that served it: the same
-    // process for both threads.
     const pidOf = (threadId: string): string | undefined =>
       events
         .filter(
@@ -853,8 +734,6 @@ describe("createAgentRuntime process lifecycle", () => {
     expect(pidOf("t1")).toBeDefined();
     expect(pidOf("t1")).toBe(pidOf("t2"));
 
-    // Stopping one thread releases its session; the process stays up for
-    // the other thread and for the provider's next thread.
     await runtime.stopThread({ threadId: "t1" });
     expect(runtime.hasThread("t1")).toBe(false);
     expect(runtime.listRunningProviders()).toEqual(["codex"]);
@@ -877,7 +756,7 @@ describe("createAgentRuntime process lifecycle", () => {
     await runtime.shutdown();
   });
 
-  it("keeps the codex provider process when one session construction fails", async () => {
+  it("retires the provider process when session construction fails", async () => {
     const events: ThreadEvent[] = [];
     const { processLog, runtime } = createCodexRuntime({
       events,
@@ -897,26 +776,14 @@ describe("createAgentRuntime process lifecycle", () => {
       }),
     ).rejects.toThrow("no rollout found");
     expect(runtime.getProviderSession("t1")).toBeNull();
-    // The process serves every codex thread in the environment, so one
-    // failed construction does not take it down.
-    expect(runtime.listRunningProviders()).toEqual(["codex"]);
+    expect(runtime.listRunningProviders()).toEqual([]);
     expect(
       processLog.read().filter((line) => line.startsWith("exit:")),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     await runtime.shutdown();
   });
 
-  // The codex account restart (shut the thread's process down after a
-  // terminal 401/429 and resume before the next turn, #130) moved into the
-  // codex bridge, which rebuilds its own app-server child from the rollout:
-  // plugins/provider-codex/src/bridge/bridge.recovery.test.ts. The runtime's
-  // generic counterpart, the `restartRecommended` recovery hint, is pinned in
-  // runtime.recovery.test.ts.
-
   it("gives a changed declaration its own bridge process at the same artifact hash", async () => {
-    // bridge-launch-process-key.test.ts deterministically covers successive
-    // declaration changes. This lifecycle boundary starts the minimum two
-    // real processes needed to prove reuse and distinction end to end.
     const record = createScriptedEchoRequestRecord();
     const bridgeLaunch: AgentRuntimeBridgeLaunch = createScriptedEchoLaunch({
       pluginId: "provider-declared",
@@ -947,7 +814,6 @@ describe("createAgentRuntime process lifecycle", () => {
         providerId: "declared",
         options: fullRuntimeOptions,
       });
-      // Same launch: one process serves both threads.
       expect(initializeCount()).toBe(1);
 
       const updatedDeclaration: AgentRuntimeBridgeLaunch = {
@@ -965,7 +831,6 @@ describe("createAgentRuntime process lifecycle", () => {
         providerId: "declared",
         options: fullRuntimeOptions,
       });
-      // A changed declaration at the same artifact hash is a new process.
       expect(initializeCount()).toBe(2);
     } finally {
       await runtime.shutdown();
@@ -987,7 +852,6 @@ describe("createAgentRuntime process lifecycle", () => {
       if (!initialSession) {
         throw new Error("Expected a codex session");
       }
-      // The provider refuses before any turn opens: a thread-scoped 401.
       await runtime.runTurn({
         clientRequestId: "creq_2222222257",
         threadId: "t1",
@@ -1010,7 +874,6 @@ describe("createAgentRuntime process lifecycle", () => {
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now() + 60 * 60 * 1000,
-        providerSessionReapingEnabled: false,
       });
       expect(result.reapedSessions).toEqual([
         expect.objectContaining({
@@ -1019,18 +882,17 @@ describe("createAgentRuntime process lifecycle", () => {
           threadId: "t1",
         }),
       ]);
-      // The session is released (thread/stop), the provider process stays.
       expect(runtime.getProviderSession("t1")).toBeNull();
-      expect(runtime.listRunningProviders()).toEqual(["codex"]);
+      expect(runtime.listRunningProviders()).toEqual([]);
       expect(
         processLog.read().filter((line) => line.startsWith("exit:")),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
     } finally {
       await runtime.shutdown();
     }
   });
 
-  it("reaps an idle codex session and resumes it later on the same process", async () => {
+  it("reaps an idle codex session and resumes it on a new process", async () => {
     const events: ThreadEvent[] = [];
     const { processLog, runtime } = createCodexRuntime({ events });
     try {
@@ -1062,7 +924,6 @@ describe("createAgentRuntime process lifecycle", () => {
       const belowThresholdResult = await runtime.reapIdleProviderSessions({
         idleForMs: 30 * 60 * 1000,
         nowMs: Date.now() + 29 * 60 * 1000,
-        providerSessionReapingEnabled: false,
       });
       expect(belowThresholdResult.reapedSessions).toEqual([]);
       expect(runtime.hasThread("t1")).toBe(true);
@@ -1073,7 +934,6 @@ describe("createAgentRuntime process lifecycle", () => {
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 30 * 60 * 1000,
         nowMs: Date.now() + 31 * 60 * 1000,
-        providerSessionReapingEnabled: false,
       });
       const reapedSession = result.reapedSessions[0];
       if (!reapedSession) {
@@ -1088,8 +948,7 @@ describe("createAgentRuntime process lifecycle", () => {
       expect(reapedSession.idleForMs).toBeGreaterThanOrEqual(30 * 60 * 1000);
       expect(runtime.hasThread("t1")).toBe(false);
       expect(runtime.getProviderSession("t1")).toBeNull();
-      // The session was released on the provider process, which stays up.
-      expect(runtime.listRunningProviders()).toEqual(["codex"]);
+      expect(runtime.listRunningProviders()).toEqual([]);
 
       await runtime.resumeThread({
         environmentId: "env-1",
@@ -1112,13 +971,12 @@ describe("createAgentRuntime process lifecycle", () => {
         text: "after reap",
         threadId: "t1",
       });
-      // Resumed on the same process: one spawn, no exit, one thread/resume.
       const logLines = processLog.read();
       expect(logLines.filter((line) => line.startsWith("spawn:"))).toHaveLength(
-        1,
+        2,
       );
       expect(logLines.filter((line) => line.startsWith("exit:"))).toHaveLength(
-        0,
+        1,
       );
       expect(
         logLines.some(
@@ -1159,12 +1017,10 @@ describe("createAgentRuntime process lifecycle", () => {
       const firstResult = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now() + 60 * 60 * 1000,
-        providerSessionReapingEnabled: false,
       });
       const secondResult = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now() + 60 * 60 * 1000,
-        providerSessionReapingEnabled: false,
       });
       expect(firstResult.reapedSessions).toEqual([]);
       expect(secondResult.reapedSessions).toEqual([]);
@@ -1177,14 +1033,12 @@ describe("createAgentRuntime process lifecycle", () => {
     }
   });
 
-  // Providers shipped as plugin artifacts are not in the runtime's restorable
-  // seed table at all, so the one thing that makes a non-Codex provider's idle
-  // sessions reapable is the `sessionRestorable` its bridge reports on
-  // session construction.
-  it("reaps a restorable non-Codex session only when the experiment is on", async () => {
+  it("reaps a restorable non-Codex session", async () => {
     const events: ThreadEvent[] = [];
+    const processLog = createScriptedEchoProcessLog();
     const runtime = createScriptedEchoRuntime({
       runtime: {
+        env: processLog.env,
         workspacePath: tmpDir,
         onEvent: (event) => events.push(event),
       },
@@ -1201,18 +1055,9 @@ describe("createAgentRuntime process lifecycle", () => {
         providerId: "claude-code",
         options: fullRuntimeOptions,
       });
-      await expect(
-        runtime.reapIdleProviderSessions({
-          idleForMs: 0,
-          nowMs: Date.now(),
-          providerSessionReapingEnabled: false,
-        }),
-      ).resolves.toEqual({ reapedSessions: [] });
-      expect(runtime.hasThread("t1")).toBe(true);
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now(),
-        providerSessionReapingEnabled: true,
       });
       expect(result.reapedSessions).toEqual([
         expect.objectContaining({
@@ -1221,14 +1066,15 @@ describe("createAgentRuntime process lifecycle", () => {
         }),
       ]);
       expect(runtime.hasThread("t1")).toBe(false);
+      expect(runtime.listRunningProviders()).toEqual([]);
+      expect(
+        processLog.read().filter((line) => line.startsWith("exit:")),
+      ).toHaveLength(1);
     } finally {
       await runtime.shutdown();
     }
   });
 
-  // A cold daemon resumes a thread it never started: the runtime seeds
-  // sessionRestorable false and only the bridge's thread/resume result can
-  // turn it on, which is what makes the resumed session reapable.
   it("marks a cold-resumed session restorable from the bridge's resume result", async () => {
     const runtime = createScriptedEchoRuntime({
       runtime: { workspacePath: tmpDir, onEvent: () => {} },
@@ -1250,7 +1096,6 @@ describe("createAgentRuntime process lifecycle", () => {
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now(),
-        providerSessionReapingEnabled: true,
       });
       expect(result.reapedSessions).toEqual([
         expect.objectContaining({ providerId: "claude-code", threadId: "t1" }),
@@ -1282,7 +1127,6 @@ describe("createAgentRuntime process lifecycle", () => {
         runtime.reapIdleProviderSessions({
           idleForMs: 0,
           nowMs: Date.now(),
-          providerSessionReapingEnabled: true,
         }),
       ).resolves.toEqual({ reapedSessions: [] });
       expect(runtime.hasThread("t1")).toBe(true);
@@ -1319,7 +1163,6 @@ describe("createAgentRuntime process lifecycle", () => {
       const result = await runtime.reapIdleProviderSessions({
         idleForMs: 0,
         nowMs: Date.now(),
-        providerSessionReapingEnabled: true,
       });
       expect(result.reapedSessions).toEqual([
         expect.objectContaining({ threadId: "t2" }),
@@ -1330,8 +1173,6 @@ describe("createAgentRuntime process lifecycle", () => {
       await runtime.shutdown();
     }
   });
-
-  // ---- Spawn environment ----
 
   it("scrubs inherited bb runtime env vars before spawning provider processes", async () => {
     vi.stubEnv("BB_DATA_DIR", "/tmp/leaked-bb-data");
@@ -1365,8 +1206,6 @@ describe("createAgentRuntime process lifecycle", () => {
     });
 
     try {
-      // The idle script never answers initialize; the spawn env is what is
-      // under test, so the stderr line is awaited while startup is pending.
       const ensure = manager
         .ensureProvider({
           bridgeLaunch: MANAGER_BRIDGE_LAUNCH,
@@ -1395,8 +1234,6 @@ describe("createAgentRuntime process lifecycle", () => {
       runtime: { workspacePath: tmpDir, env: record.env, onEvent: () => {} },
     });
     try {
-      // With no node on PATH the bridge bootstrap can only have run under the
-      // runtime's own executable: the handshake completing proves it.
       await runtime.ensureProvider({ providerId: "fake" });
       expect(record.last("initialize")).toBeDefined();
     } finally {
@@ -1481,19 +1318,12 @@ describe("createAgentRuntime process lifecycle", () => {
         ),
     });
     events.splice(0, events.length);
-    // The bridge emits a late thread/identity on SIGTERM; nothing written
-    // after shutdown starts reaches consumers.
     await runtime.shutdown();
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(events).toEqual([]);
   });
 
-  // ---- Fail-fast behavior ----
-
   it("fails fast when the bridge artifact does not exist", async () => {
-    // The bootstrap worker spawns, cannot import the artifact, and exits
-    // before the handshake: ensureProvider must surface that instead of
-    // waiting on a process that will never answer.
     const runtime = createAgentRuntime({
       workspacePath: tmpDir,
       onEvent: () => {},
@@ -1529,8 +1359,6 @@ describe("createAgentRuntime process lifecycle", () => {
     const runtime = createScriptedEchoRuntime({
       runtime: {
         workspacePath: tmpDir,
-        // Process-level: skills/configure runs at startup, before any
-        // session options exist. Only the first process fails it.
         env: {
           ...record.env,
           ...scriptedEchoProcessEnv({
@@ -1555,8 +1383,6 @@ describe("createAgentRuntime process lifecycle", () => {
         }),
       ).rejects.toThrow("configure failed");
       expect(runtime.listRunningProviders()).not.toContain("codex");
-      // The failed process was discarded; the next start spawns a fresh one
-      // which runs the startup configuration again before the thread starts.
       const requestsBefore = record.read();
       expect(requestsBefore.map((request) => request.method)).toEqual([
         "initialize",
@@ -1568,8 +1394,6 @@ describe("createAgentRuntime process lifecycle", () => {
     } finally {
       await runtime.shutdown();
     }
-    // A second runtime with a non-failing bridge process: the cached provider
-    // was removed, so startup runs in full and the thread starts.
     const retryRecord = createScriptedEchoRequestRecord();
     const retryRuntime = createScriptedEchoRuntime({
       runtime: {
@@ -1618,8 +1442,6 @@ describe("createAgentRuntime process lifecycle", () => {
         providerId: "codex",
         options: fullRuntimeOptions,
       });
-      // Startup configuration is ordered before the thread reaches the
-      // bridge, every time.
       expect(record.read().map((request) => request.method)).toEqual([
         "initialize",
         "skills/configure",
@@ -1671,7 +1493,6 @@ describe("createAgentRuntime process lifecycle", () => {
         onEvent: () => {},
         onProcessExit: exitInfo,
       },
-      // Acknowledge turn/start, then exit before the turn opens.
       launch: { scripted: { swallowTurnStart: true, exitAfter: "turn/start" } },
     });
 
@@ -1719,7 +1540,6 @@ describe("createAgentRuntime process lifecycle", () => {
       runtime.ensureProvider({ providerId: "fake" }),
       runtime.ensureProvider({ providerId: "fake" }),
     ]);
-    // One process, one handshake.
     expect(
       record.read().filter((request) => request.method === "initialize"),
     ).toHaveLength(1);
