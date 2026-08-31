@@ -344,6 +344,18 @@ async function hostDaemonIsReady({ daemonPort, serverUrl }) {
   }
 }
 
+async function pluginStartupIsSettled(serverUrl) {
+  try {
+    const response = await fetch(
+      new URL("/api/v1/system/providers", serverUrl),
+      { signal: AbortSignal.timeout(2_000) },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function waitForChildExit(child, timeoutMs) {
   if (child.exitCode !== null || child.signalCode !== null) {
     return true;
@@ -503,7 +515,7 @@ async function smokeLinuxAppImageLifecycle() {
       retryErrors: false,
     });
     await waitFor({
-      describe: `bb and its host daemon at ${runtime.serverUrl} to be ready`,
+      describe: `bb startup and its host daemon at ${runtime.serverUrl} to settle`,
       predicate: async () => {
         if (child.exitCode !== null || child.signalCode !== null) {
           await Promise.race([childClosed, sleep(outputFlushTimeoutMs)]);
@@ -523,10 +535,12 @@ async function smokeLinuxAppImageLifecycle() {
             )}`,
           );
         }
-        return await hostDaemonIsReady({
-          daemonPort,
-          serverUrl: runtime.serverUrl,
-        });
+        return (
+          (await hostDaemonIsReady({
+            daemonPort,
+            serverUrl: runtime.serverUrl,
+          })) && (await pluginStartupIsSettled(runtime.serverUrl))
+        );
       },
       retryErrors: false,
     });
