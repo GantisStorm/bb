@@ -211,7 +211,7 @@ function SidebarTriggerOverlay({
       <div
         data-testid="app-desktop-sidebar-trigger"
         className={cn(
-          "fixed top-0 z-50",
+          "fixed top-0 z-40",
           CHROME_ROW_CLASS,
           reserveMacosTrafficLights
             ? MACOS_TRAFFIC_LIGHT_RESERVE_OFFSET_CLASS
@@ -239,7 +239,7 @@ function SidebarTriggerOverlay({
     <div
       data-testid="app-sidebar-trigger-overlay"
       className={cn(
-        "fixed top-[env(safe-area-inset-top)] left-[env(safe-area-inset-left)] z-50",
+        "fixed top-[env(safe-area-inset-top)] left-[env(safe-area-inset-left)] z-40",
         CHROME_ROW_CLASS,
         BROWSER_SIDEBAR_TRIGGER_INSET_CLASS,
       )}

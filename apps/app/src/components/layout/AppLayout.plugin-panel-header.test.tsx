@@ -183,4 +183,13 @@ describe("AppLayout plugin panel header", () => {
 
     expect(screen.queryByTestId("app-page-header")).toBeNull();
   });
+
+  it("keeps fixed app chrome below full-page tool surfaces", () => {
+    viewportState.compact = true;
+    renderPluginPanelRoute();
+
+    const trigger = screen.getByTestId("app-sidebar-trigger-overlay");
+    expect(trigger.className).toContain("z-40");
+    expect(trigger.className).not.toContain("z-50");
+  });
 });
