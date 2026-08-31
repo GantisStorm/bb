@@ -335,8 +335,6 @@ setInterval(() => undefined, 1000);
       process: processEntry,
       text: "ready",
     });
-    // Prove the fixture can handle SIGTERM before starting the short
-    // escalation window, which may otherwise expire before the child runs.
     processEntry.childProcess.kill("SIGTERM");
     await waitForLog({
       process: processEntry,
