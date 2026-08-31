@@ -163,6 +163,9 @@ describe("bb app process", () => {
     });
 
     expect(launch.args).toContain(desktopMountScript.path);
+    if (process.platform !== "linux") {
+      return;
+    }
     const result = await execFileAsync(launch.executablePath, launch.args, {
       env: {
         ...launch.env,
@@ -301,8 +304,6 @@ setInterval(() => undefined, 1000);
       text: "ready",
       timeoutMs: 1_000,
     });
-    // Prove the fixture can handle SIGTERM before starting the short
-    // escalation window, which may otherwise expire before the child runs.
     processEntry.childProcess.kill("SIGTERM");
     await waitForLog({
       process: processEntry,

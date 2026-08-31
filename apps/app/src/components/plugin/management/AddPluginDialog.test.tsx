@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import type { PluginListResult } from "@/hooks/queries/plugin-settings-queries";
+import type { InstalledPlugin } from "@bb/server-contract";
 import {
   pluginCatalogSearchQueryKey,
   pluginListQueryKey,
@@ -16,7 +16,6 @@ interface RecordedRequest {
   init: RequestInit | undefined;
 }
 
-/** The install-plan the dialog resolves before confirming a catalog entry. */
 function installPlanFor(url: string): unknown {
   const params = new URL(url, "https://bb.test").searchParams;
   const entryId = params.get("entryId") ?? "";
@@ -157,8 +156,6 @@ describe("AddPluginDialog", () => {
     const requests = stubFetch();
     renderDialog();
 
-    // The commit button is disabled until a source is entered; the trust
-    // warning is always visible.
     expect(screen.getByTestId("full-trust-warning")).toBeTruthy();
     const install = screen.getByRole("button", {
       name: /install plugin/i,
@@ -183,9 +180,6 @@ describe("AddPluginDialog", () => {
   });
 
   it("reports progress while an install is in flight", async () => {
-    // A first install on a machine also downloads the build toolchain, so this
-    // window can run ~17s. The server does that behind one blocking request, so
-    // the client can only say that work is happening — not how far along it is.
     let release: (() => void) | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation(
       () =>
@@ -205,7 +199,6 @@ describe("AddPluginDialog", () => {
         screen.getByRole("button", { name: /installing plugin/i }),
       ).toBeTruthy();
     });
-    // The trust warning has served its purpose by now; the bar replaces it.
     expect(screen.getByRole("progressbar")).toBeTruthy();
     expect(screen.queryByTestId("full-trust-warning")).toBeNull();
 
@@ -232,8 +225,6 @@ describe("AddPluginDialog", () => {
     ).not.toBeNull();
     unmount();
 
-    // Git catalog entries install from their listed repository, not the app
-    // bundle. A ref can be a branch, so the dialog must not call it pinned.
     const git = renderDialog({
       entryId: "thread-hover-cards",
       marketplace: "bb-community",
@@ -271,8 +262,6 @@ describe("AddPluginDialog", () => {
 
   it("shows the exact source, including a pinned npm registry", () => {
     stubFetch();
-    // A listing can send BB to another registry. The confirmation names it,
-    // so nobody confirms an install whose code comes from an unseen host.
     renderDialog({
       entryId: "widgets",
       displayName: "Widgets",
@@ -343,9 +332,7 @@ describe("AddPluginDialog", () => {
     stubFetch();
     const onInstalled = vi.fn();
     const { wrapper, queryClient } = createQueryClientTestHarness();
-    queryClient.setQueryData<PluginListResult>(pluginListQueryKey(true), {
-      plugins: [],
-    });
+    queryClient.setQueryData<InstalledPlugin[]>(pluginListQueryKey(true), []);
     render(
       <AddPluginDialog
         open
@@ -364,8 +351,8 @@ describe("AddPluginDialog", () => {
           onInstalled(plugin);
           expect(
             queryClient
-              .getQueryData<PluginListResult>(pluginListQueryKey(true))
-              ?.plugins.some((candidate) => candidate.id === plugin.id),
+              .getQueryData<InstalledPlugin[]>(pluginListQueryKey(true))
+              ?.some((candidate) => candidate.id === plugin.id),
           ).toBe(true);
         }}
       />,
@@ -417,13 +404,10 @@ describe("AddPluginDialog", () => {
       source: "git:https://github.com/acme/plugins.git@semver:^1.0.0",
     });
 
-    // The resolved tag and commit are the point: the listing's own copy is not
-    // evidence of what the install fetches.
     await vi.waitFor(() => {
       expect(screen.getByText("v1.2.3")).toBeTruthy();
     });
     expect(screen.getByText("a".repeat(40))).toBeTruthy();
-    // The repository row opens the code the confirmation describes.
     expect(
       screen
         .getByRole("link", { name: "https://github.com/acme/plugins.git" })
@@ -490,7 +474,6 @@ describe("AddPluginDialog", () => {
   it("invalidates catalog-search queries after a successful install", async () => {
     stubFetch();
     const { wrapper, queryClient } = createQueryClientTestHarness();
-    // A cached Browse search must refetch so the card flips to Installed ✓.
     queryClient.setQueryData(pluginCatalogSearchQueryKey(""), []);
     render(<AddPluginDialog open onOpenChange={() => {}} />, { wrapper });
 
