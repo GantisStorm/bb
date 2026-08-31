@@ -303,7 +303,7 @@ describe("Theme Preview", () => {
   });
 
   it("uses light and dark icons while preserving keyboard mode selection", async () => {
-    const selections: Array<{ themeId: string; mode: "light" | "dark" }> = [];
+    const selections: Array<{ themeId: string }> = [];
     renderPreview({
       themeCatalog: () => DEFAULT_CATALOG,
       setTheme: (selection) => {
@@ -323,7 +323,7 @@ describe("Theme Preview", () => {
     dark.focus();
     expect(document.activeElement).toBe(dark);
     fireEvent.click(dark, { detail: 0 });
-    await waitFor(() => expect(selections).toEqual([{ themeId: "default", mode: "dark" }]));
+    await waitFor(() => expect(selections).toEqual([{ themeId: "default" }]));
     expect(dark.getAttribute("aria-pressed")).toBe("true");
     expect(light.getAttribute("aria-pressed")).toBe("false");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
@@ -332,8 +332,8 @@ describe("Theme Preview", () => {
     light.focus();
     fireEvent.click(light, { detail: 0 });
     await waitFor(() => expect(selections).toEqual([
-      { themeId: "default", mode: "dark" },
-      { themeId: "default", mode: "light" },
+      { themeId: "default" },
+      { themeId: "default" },
     ]));
     expect(light.getAttribute("aria-pressed")).toBe("true");
     expect(dark.getAttribute("aria-pressed")).toBe("false");
@@ -672,13 +672,21 @@ describe("Theme Preview", () => {
       },
     });
 
-    const rowReset = await screen.findByRole("button", { name: "Reset Sidebar row to Density" });
+    const rowReset = await waitFor(() => {
+      const button = screen.getByRole("button", { name: "Reset Sidebar row to Density" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+      return button;
+    });
     expect(edits).toHaveLength(0);
     fireEvent.click(rowReset);
     await waitFor(() => expect(edits).toHaveLength(1));
     expect(edits[0]).toMatchObject({ mode: "light", edit: { kind: "restore-link", target: "sidebar-row" } });
 
-    const shadowReset = await screen.findByRole("button", { name: "Reset Shadow color to Ink" });
+    const shadowReset = await waitFor(() => {
+      const button = screen.getByRole("button", { name: "Reset Shadow color to Ink" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+      return button;
+    });
     fireEvent.click(shadowReset);
     await waitFor(() => expect(edits).toHaveLength(2));
     expect(edits[1]).toMatchObject({ mode: "light", edit: { kind: "restore-link", target: "shadow-color" } });

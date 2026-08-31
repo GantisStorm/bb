@@ -23,8 +23,7 @@ function declarationProjection(css: string): Record<string, Record<string, strin
 }
 
 function readRealThemeSource(id: string): string {
-  // Source-only contract check: the runtime plugin consumes its own snapshot.
-  const path = resolve(repoRoot, `apps/app/src/lib/themes/${id}.ts`);
+  const path = resolve(repoRoot, `packages/domain/src/app-theme-css/${id}.ts`);
   const source = readFileSync(path, "utf8");
   const match = /export const \w+ThemeCss\s*=\s*`([\s\S]*?)`;/.exec(source);
   if (!match) throw new Error(`Could not read the CSS template from ${path}`);

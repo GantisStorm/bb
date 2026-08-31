@@ -836,6 +836,9 @@ export function applyThemeEditWithEffects(
 
   switch (edit.kind) {
     case "colors": {
+      const linkedShadowInkBefore = edit.target === "ink" && linksBefore.shadowColor[input.mode] === "linked"
+        ? effectiveDeclaration(declarations, source, input.mode, "ink")
+        : undefined;
       const resolved = resolveColorRelationships(input.mode, edit);
       committedEdit = resolved.edit;
       if (resolved.families.has("anchors")) {
@@ -868,18 +871,15 @@ export function applyThemeEditWithEffects(
             : "Theme relationship remains valid",
         });
       }
-      if (edit.target === "ink" && linksBefore.shadowColor[input.mode] === "linked") {
-        const previousInk = effectiveDeclaration(declarations, source, input.mode, "ink");
-        if (previousInk !== undefined && previousInk !== resolved.edit.ink) {
-          adjustments.push({
-            control: "shadow:color",
-            label: "Shadow color",
-            scope: input.mode,
-            from: previousInk,
-            to: resolved.edit.ink,
-            invariant: "Shadow color follows Ink while linked",
-          });
-        }
+      if (linkedShadowInkBefore !== undefined && linkedShadowInkBefore !== resolved.edit.ink) {
+        adjustments.push({
+          control: "shadow:color",
+          label: "Shadow color",
+          scope: input.mode,
+          from: linkedShadowInkBefore,
+          to: resolved.edit.ink,
+          invariant: "Shadow color follows Ink while linked",
+        });
       }
       break;
     }
