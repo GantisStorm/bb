@@ -429,9 +429,6 @@ export async function buildPluginApp(
       outfile: stagedJsPath,
       absWorkingDir: rootDir,
       bundle: true,
-      // The metafile can contain thousands of bundled inputs. Only request it
-      // when a direct dependency opts its sources into Tailwind scanning;
-      // ordinary plugins scan their own tree and never consume the manifest.
       metafile: dependencySources.length > 0,
       format: "esm",
       platform: "browser",

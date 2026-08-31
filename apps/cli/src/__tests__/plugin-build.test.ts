@@ -40,11 +40,6 @@ async function failingTailwindToolchain(
   return { ...real, tailwindNode: pathToFileURL(stub).href };
 }
 
-/**
- * Delegates to the real esbuild while rejecting its optional metafile. A
- * fresh scaffold has no dependency that opts into Tailwind source scanning,
- * so producing and canonicalizing its 5,000+ input manifest is unused work.
- */
 async function metafileRejectingToolchain(
   dir: string,
 ): Promise<PluginBuildToolchain> {
