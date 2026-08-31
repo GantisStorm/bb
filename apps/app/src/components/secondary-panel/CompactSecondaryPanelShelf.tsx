@@ -1,6 +1,15 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { usePersistentOverlayFocus } from "@bb/shared-ui/responsive-overlay";
 import {
   setCompactSecondaryPanelPresentation,
   type CompactSecondaryPanelPresentation,
@@ -30,21 +39,26 @@ export function CompactSecondaryPanelShelf({
   const labelId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const state = !open ? "closed" : presentation;
+  const onCloseRef = useRef(onClose);
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  const requestClose = useCallback(() => onCloseRef.current(), []);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPortalTarget(document.body);
+  }, []);
+
+  usePersistentOverlayFocus({
+    open: open && portalTarget !== null,
+    panelRef,
+    requestClose,
+  });
 
   useEffect(() => {
     setCompactSecondaryPanelPresentation(state);
     return () => setCompactSecondaryPanelPresentation("closed");
   }, [state]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.key !== "Escape") return;
-      onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
 
   useEffect(() => {
     if (onContentAnimationEnd === undefined) return;
@@ -55,10 +69,6 @@ export function CompactSecondaryPanelShelf({
     return () => window.clearTimeout(timer);
   }, [onContentAnimationEnd, open]);
 
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  useEffect(() => {
-    setPortalTarget(document.body);
-  }, []);
   if (portalTarget === null) {
     return null;
   }
@@ -77,13 +87,14 @@ export function CompactSecondaryPanelShelf({
           SHELF_TRANSITION_CLASS,
           "data-[state=closed]:pointer-events-none data-[state=full]:pointer-events-none",
         )}
-        onClick={onClose}
+        onClick={requestClose}
       />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={srLabel === undefined ? undefined : labelId}
+        data-bb-portaled-overlay=""
         tabIndex={-1}
         inert={!open}
         data-secondary-panel-shelf=""
