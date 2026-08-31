@@ -506,6 +506,7 @@ async function smokeLinuxAppImageLifecycle() {
       describe: `bb and its host daemon at ${runtime.serverUrl} to be ready`,
       predicate: async () => {
         if (child.exitCode !== null || child.signalCode !== null) {
+          await Promise.race([childClosed, sleep(outputFlushTimeoutMs)]);
           throw new Error(
             `AppImage exited before bb became ready: code=${String(
               child.exitCode,
