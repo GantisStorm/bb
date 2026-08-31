@@ -193,6 +193,7 @@ describe("CompactSecondaryPanelShelf", () => {
           <CompactSecondaryPanelShelf
             open={open}
             onClose={() => setOpen(false)}
+            presentation="shelf"
             srLabel="Right panel"
           >
             <button type="button">First action</button>
