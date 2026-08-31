@@ -2,7 +2,7 @@ import { definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plu
 import { Badge as BbBadge } from "@bb/shared-ui/badge";
 import { Button as BbButton } from "@bb/shared-ui/button";
 import { Checkbox as BbCheckbox } from "@bb/shared-ui/checkbox";
-import { Notification02Icon } from "@hugeicons/core-free-icons";
+import { Moon02Icon, Notification02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Dialog,
@@ -62,7 +62,11 @@ import {
   type ReactNode,
 } from "react";
 import type { rpcContract } from "./server";
-import type { ThemeEditInput } from "./theme-editor";
+import type {
+  ThemeEditAdjustment,
+  ThemeEditInput,
+  ThemeLinkStates,
+} from "./theme-editor";
 import {
   contentInsetForWidth,
   SURFACE_RAIL_WIDTH,
@@ -75,7 +79,7 @@ import {
   type FrameComposition,
   type LayoutBand,
 } from "./responsive-layout";
-import { LatestRequest, contrastRatio } from "./theme-utils";
+import { LatestRequest } from "./theme-utils";
 import {
   AREA_TITLES,
   DIRECT_COLOR_CONTROLS,
@@ -130,6 +134,10 @@ function withRpcTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
 }
 
 type Mode = "light" | "dark";
+const DEFAULT_LINK_STATES: ThemeLinkStates = {
+  sidebarRow: "linked",
+  shadowColor: { light: "linked", dark: "linked" },
+};
 type ThemeSelection = { themeId: string; mode: Mode };
 type ForkNotice = {
   copyName: string;
@@ -137,6 +145,15 @@ type ForkNotice = {
   themeId: string;
   undoToken: string;
 };
+type EditFeedback =
+  | { state: "idle" }
+  | { state: "saving" }
+  | { state: "saved" }
+  | { state: "adjusted"; adjustments: ThemeEditAdjustment[] }
+  | { state: "failed"; edit: ThemeEditInput["edit"]; message: string };
+type EditEvent =
+  | { id: number; state: "committed"; edit: ThemeEditInput["edit"]; links: ThemeLinkStates; mode: Mode }
+  | { id: number; state: "failed"; edit: ThemeEditInput["edit"] };
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -790,7 +807,7 @@ const TEXT_SUPPORT: CSSProperties = { fontSize: 11.5, lineHeight: "17px", color:
 // their read-only previews. Keeping these roles shared avoids independent
 // pixel tuning by family.
 const SHEET_SPACE = { inline: 4, control: 6, group: 12, section: 16 } as const;
-const SHEET_SIZE = { field: 28, fontRow: 30, colorRow: 28, preview: 40, radiusPreview: 32, typePreview: 44 } as const;
+const SHEET_SIZE = { field: 28, fontRow: 30, colorRow: 28 } as const;
 const COLOR_CONTROL_LAYOUT: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "minmax(0, max-content) 24px max-content",
@@ -851,9 +868,15 @@ type ThemeEdit = ThemeEditInput["edit"];
 type ColorEdit = Extract<ThemeEdit, { kind: "colors" }>;
 type ColorTarget = ColorEdit["target"];
 type DirectColors = Omit<ColorEdit, "kind" | "target">;
-type TypographyValues = Omit<Extract<ThemeEdit, { kind: "typography" }>, "kind">;
-type RhythmValues = Omit<Extract<ThemeEdit, { kind: "rhythm" }>, "kind">;
-type ShadowValues = Omit<Extract<ThemeEdit, { kind: "shadow" }>, "kind">;
+type TypographyEdit = Extract<ThemeEdit, { kind: "typography" }>;
+type TypographyTarget = TypographyEdit["target"];
+type TypographyValues = Omit<TypographyEdit, "kind" | "target">;
+type RhythmEdit = Extract<ThemeEdit, { kind: "rhythm" }>;
+type RhythmTarget = RhythmEdit["target"];
+type RhythmValues = Omit<RhythmEdit, "kind" | "target">;
+type ShadowEdit = Extract<ThemeEdit, { kind: "shadow" }>;
+type ShadowTarget = ShadowEdit["target"];
+type ShadowValues = Omit<ShadowEdit, "kind" | "target">;
 type EditorValues = {
   colors: DirectColors;
   typography: TypographyValues;
@@ -924,15 +947,6 @@ function rgbToHex(value: string | undefined): string | null {
   return `#${channels.join("")}${alpha}`;
 }
 
-function hexToRgb(value: string): string {
-  const normalized = value.slice(1);
-  const channels = normalized.length >= 6
-    ? [normalized.slice(0, 2), normalized.slice(2, 4), normalized.slice(4, 6)].map((channel) => Number.parseInt(channel, 16))
-    : [0, 0, 0];
-  const alpha = normalized.length === 8 ? Number.parseInt(normalized.slice(6, 8), 16) / 255 : 1;
-  return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
-}
-
 function valuesFromComputed(computed: Computed, resolvedRadii: Record<string, string>): EditorValues {
   const color = (token: string, fallback: string) => {
     const raw = computed[token]?.value.trim();
@@ -985,7 +999,72 @@ function valuesFromComputed(computed: Computed, resolvedRadii: Record<string, st
   };
 }
 
-function SliderField({ specimen, label, value, min, max, step, unit, displayValue, disabled, onChange, onCommit }: {
+/** Apply the server's authoritative response without disturbing unrelated controls. */
+function applyCommittedEdit(values: EditorValues, edit: ThemeEdit): EditorValues {
+  switch (edit.kind) {
+    case "colors": {
+      const { kind: _kind, target: _target, ...colors } = edit;
+      return { ...values, colors };
+    }
+    case "typography": {
+      const { kind: _kind, target: _target, ...typography } = edit;
+      return { ...values, typography };
+    }
+    case "rhythm": {
+      const { kind: _kind, target: _target, ...rhythm } = edit;
+      return { ...values, rhythm };
+    }
+    case "radius":
+      return { ...values, radius: edit.value };
+    case "shadow": {
+      const { kind: _kind, target: _target, ...shadow } = edit;
+      return { ...values, shadow };
+    }
+    case "restore-link":
+      return edit.target === "sidebar-row"
+        ? { ...values, rhythm: { ...values.rhythm, rowHeight: 20 + values.rhythm.density * 2 } }
+        : { ...values, shadow: { ...values.shadow, color: values.colors.ink } };
+  }
+}
+
+/** A failed request restores only the control the user just changed. */
+function rollbackFailedEdit(values: EditorValues, committed: EditorValues, edit: ThemeEdit): EditorValues {
+  switch (edit.kind) {
+    case "colors": {
+      const key = COLOR_STATE_KEYS[edit.target];
+      return { ...values, colors: { ...values.colors, [key]: committed.colors[key] } };
+    }
+    case "typography":
+      switch (edit.target) {
+        case "font-sans": return { ...values, typography: { ...values.typography, fontSans: committed.typography.fontSans } };
+        case "font-mono": return { ...values, typography: { ...values.typography, fontMono: committed.typography.fontMono } };
+        case "text-scale": return { ...values, typography: { ...values.typography, textScale: committed.typography.textScale } };
+        case "line-height": return { ...values, typography: { ...values.typography, lineHeight: committed.typography.lineHeight } };
+      }
+    case "rhythm":
+      switch (edit.target) {
+        case "density": return { ...values, rhythm: { ...values.rhythm, density: committed.rhythm.density } };
+        case "tracking": return { ...values, rhythm: { ...values.rhythm, tracking: committed.rhythm.tracking } };
+        case "sidebar-row": return { ...values, rhythm: { ...values.rhythm, rowHeight: committed.rhythm.rowHeight } };
+        case "icon-stroke": return { ...values, rhythm: { ...values.rhythm, iconStroke: committed.rhythm.iconStroke } };
+      }
+    case "radius":
+      return { ...values, radius: committed.radius };
+    case "shadow":
+      switch (edit.target) {
+        case "x": return { ...values, shadow: { ...values.shadow, x: committed.shadow.x } };
+        case "y": return { ...values, shadow: { ...values.shadow, y: committed.shadow.y } };
+        case "blur": return { ...values, shadow: { ...values.shadow, blur: committed.shadow.blur } };
+        case "spread": return { ...values, shadow: { ...values.shadow, spread: committed.shadow.spread } };
+        case "color": return { ...values, shadow: { ...values.shadow, color: committed.shadow.color } };
+        case "opacity": return { ...values, shadow: { ...values.shadow, opacity: committed.shadow.opacity } };
+      }
+    case "restore-link":
+      return values;
+  }
+}
+
+function SliderField({ specimen, label, value, min, max, step, unit, displayValue, disabled, relationship, resetLabel, onReset, onChange, onCommit }: {
   specimen: string;
   label: string;
   value: number;
@@ -995,14 +1074,31 @@ function SliderField({ specimen, label, value, min, max, step, unit, displayValu
   unit: string;
   displayValue?: (value: number) => string;
   disabled: boolean;
+  relationship?: string;
+  resetLabel?: string;
+  onReset?: () => void;
   onChange: (value: number) => void;
   onCommit: (value: number) => void;
 }) {
   const formatted = displayValue?.(value) ?? `${Number.isInteger(value) ? value : Number(value.toFixed(3))}${unit}`;
   return (
     <div data-tp-specimen={specimen} style={{ display: "grid", gridTemplateRows: `18px ${SHEET_SIZE.field}px`, minWidth: 0, padding: "2px 0" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span data-tp-role="label" style={{ ...TEXT_LABEL, flex: 1, minWidth: 0 }}>{label}</span>
+        {relationship ? <span data-tp-link-state="" style={TEXT_SUPPORT}>{relationship}</span> : null}
+        {onReset ? (
+          <BbButton
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={resetLabel ?? `Reset ${label}`}
+            className="h-5 cursor-pointer px-1.5 text-xs"
+            disabled={disabled}
+            onClick={onReset}
+          >
+            Reset
+          </BbButton>
+        ) : null}
         <span data-tp-role="value" style={TEXT_VALUE}>{formatted}</span>
       </div>
       <Slider
@@ -1044,61 +1140,8 @@ function FontField({ specimen, label, value, options, disabled, onChange }: {
   );
 }
 
-const TYPE_STEPS = [
-  { id: "2xs", size: 10, line: 14 },
-  { id: "xs", size: 12, line: 16 },
-  { id: "sm", size: 13, line: 19 },
-  { id: "base", size: 15, line: 22 },
-] as const;
-
-function TypeSteps({ typography }: { typography: TypographyValues }) {
-  return (
-    <div data-tp-derived="type-steps" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: SHEET_SPACE.inline, marginTop: SHEET_SPACE.control }}>
-      {TYPE_STEPS.map((step) => (
-        <span key={step.id} title={`${step.id} · ${(step.size * typography.textScale).toFixed(1)} / ${(step.line * typography.lineHeight).toFixed(1)}px`} style={{ display: "grid", alignContent: "center", minWidth: 0, minHeight: SHEET_SIZE.typePreview, padding: "2px 4px", borderRadius: RADIUS_MD, background: v("surface-recessed-soft-solid", v("card")), textAlign: "center", overflow: "hidden" }}>
-          <span style={{ display: "block", fontFamily: typography.fontSans, fontSize: clamp(step.size * typography.textScale, 9, 17), lineHeight: `${step.line * typography.lineHeight}px` }}>Aa</span>
-          <span style={{ ...TEXT_VALUE, fontFamily: typography.fontMono }}>{step.id}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function BaseContrast({ colors }: { colors: DirectColors }) {
-  const canvas = contrastRatio(hexToRgb(colors.ink), hexToRgb(colors.canvas));
-  const sidebar = contrastRatio(hexToRgb(colors.sidebarForeground), hexToRgb(colors.sidebar), hexToRgb(colors.canvas));
-  const textAccents = [colors.timelineAccent, colors.success, colors.warning, colors.prMerged]
-    .map((color) => contrastRatio(hexToRgb(color), hexToRgb(colors.canvas)))
-    .filter((ratio): ratio is number => ratio !== null);
-  const controls = [colors.primary, colors.attention, colors.destructive]
-    .map((color) => contrastRatio(hexToRgb(color), hexToRgb(colors.canvas)))
-    .filter((ratio): ratio is number => ratio !== null);
-  const lowest = (ratios: number[]) => ratios.length > 0 ? Math.min(...ratios) : null;
-  const item = (label: string, ratio: number | null, minimum = 4.5) => (
-    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
-      <span style={{ ...TEXT_SUPPORT }}>{label}</span>
-      <Badge tone={ratio === null || ratio >= minimum ? "success" : "destructive"}>{ratio === null ? "—" : `${ratio.toFixed(1)}:1`}</Badge>
-    </span>
-  );
-  return (
-    <div
-      data-tp-base-contrast=""
-      style={{
-        display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 12, rowGap: 6,
-        minHeight: 34, marginTop: 8, padding: "5px 8px", borderRadius: RADIUS_MD,
-        background: v("surface-recessed-soft-solid", v("card")),
-      }}
-    >
-      <span data-tp-role="label" style={TEXT_LABEL}>Theme safety</span>
-      {item("Canvas / ink", canvas)}
-      {item("Sidebar", sidebar)}
-      {item("Text accents", lowest(textAccents))}
-      {item("Controls", lowest(controls), 3)}
-    </div>
-  );
-}
-
-function ColorEditor({ values, disabled, onChange, onCommit }: {
+function ColorEditor({ controls, values, disabled, onChange, onCommit }: {
+  controls: readonly (typeof DIRECT_COLOR_CONTROLS)[number][];
   values: DirectColors;
   disabled: boolean;
   onChange: (values: DirectColors) => void;
@@ -1125,7 +1168,7 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
     <div data-tp-block="colors">
       <TooltipProvider delayDuration={300}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(196px, 1fr))", columnGap: SHEET_SPACE.group, rowGap: SHEET_SPACE.inline }}>
-          {DIRECT_COLOR_CONTROLS.map((control) => {
+          {controls.map((control) => {
             const key = COLOR_STATE_KEYS[control.id];
             return (
               <div
@@ -1153,20 +1196,6 @@ function ColorEditor({ values, disabled, onChange, onCommit }: {
           })}
         </div>
       </TooltipProvider>
-      <BaseContrast colors={values} />
-    </div>
-  );
-}
-
-function RadiusPreviews({ value }: { value: number }) {
-  const ladder = [Math.max(0, value - 4), Math.max(0, value - 2), value, value + 4];
-  return (
-    <div data-tp-derived="radius-ladder" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: SHEET_SPACE.inline, marginTop: SHEET_SPACE.control }}>
-      {RADIUS_SPECIMENS.map((specimen, index) => (
-        <span key={specimen.id} title={`${specimen.title} · ${ladder[index]}px`} style={{ height: SHEET_SIZE.radiusPreview, borderRadius: ladder[index], background: v("surface-recessed-soft-solid", v("card")), boxShadow: `inset 0 0 0 1px ${v("border")}`, display: "grid", placeItems: "center", ...TEXT_VALUE }}>
-          {ladder[index]}
-        </span>
-      ))}
     </div>
   );
 }
@@ -1371,12 +1400,12 @@ function TypographyEditor({ value, disabled, onChange, onCommit }: {
   value: TypographyValues;
   disabled: boolean;
   onChange: (value: TypographyValues) => void;
-  onCommit: (value: TypographyValues) => void;
+  onCommit: (target: TypographyTarget, value: TypographyValues) => void;
 }) {
-  const update = <K extends keyof TypographyValues>(key: K, next: TypographyValues[K], commit: boolean) => {
+  const update = <K extends keyof TypographyValues>(target: TypographyTarget, key: K, next: TypographyValues[K], commit: boolean) => {
     const updated = { ...value, [key]: next };
     onChange(updated);
-    if (commit) onCommit(updated);
+    if (commit) onCommit(target, updated);
   };
   return (
     <SystemBlock id="typography" title="Typography">
@@ -1386,7 +1415,7 @@ function TypographyEditor({ value, disabled, onChange, onCommit }: {
         value={value.fontSans}
         disabled={disabled}
         options={[{ label: "BB default", value: DEFAULT_SANS }, { label: "System sans", value: SYSTEM_SANS }]}
-        onChange={(next) => update("fontSans", next, true)}
+        onChange={(next) => update("font-sans", "fontSans", next, true)}
       />
       <FontField
         specimen="type:font-mono"
@@ -1394,46 +1423,54 @@ function TypographyEditor({ value, disabled, onChange, onCommit }: {
         value={value.fontMono}
         disabled={disabled}
         options={[{ label: "BB default", value: DEFAULT_MONO }, { label: "System mono", value: SYSTEM_MONO }]}
-        onChange={(next) => update("fontMono", next, true)}
+        onChange={(next) => update("font-mono", "fontMono", next, true)}
       />
-      <SliderField specimen="type:text-scale" label="Text scale" value={value.textScale} min={0.9} max={1.1} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("textScale", next, false)} onCommit={(next) => update("textScale", next, true)} />
-      <SliderField specimen="type:line-height" label="Line height" value={value.lineHeight} min={0.9} max={1.15} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("lineHeight", next, false)} onCommit={(next) => update("lineHeight", next, true)} />
-      <TypeSteps typography={value} />
+      <SliderField specimen="type:text-scale" label="Text scale" value={value.textScale} min={0.9} max={1.1} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("text-scale", "textScale", next, false)} onCommit={(next) => update("text-scale", "textScale", next, true)} />
+      <SliderField specimen="type:line-height" label="Line height" value={value.lineHeight} min={0.9} max={1.15} step={0.01} unit="" displayValue={(next) => `${Math.round(next * 100)}%`} disabled={disabled} onChange={(next) => update("line-height", "lineHeight", next, false)} onCommit={(next) => update("line-height", "lineHeight", next, true)} />
     </SystemBlock>
   );
 }
 
-function RhythmEditor({ value, disabled, onChange, onCommit }: {
+function RhythmEditor({ tier, value, links, disabled, onChange, onCommit, onRestoreRowLink }: {
+  tier: "essential" | "advanced";
   value: RhythmValues;
+  links: ThemeLinkStates;
   disabled: boolean;
   onChange: (value: RhythmValues) => void;
-  onCommit: (value: RhythmValues) => void;
+  onCommit: (target: RhythmTarget, value: RhythmValues) => void;
+  onRestoreRowLink: () => void;
 }) {
-  const update = <K extends keyof RhythmValues>(key: K, next: RhythmValues[K], commit: boolean) => {
+  const update = <K extends keyof RhythmValues>(target: RhythmTarget, key: K, next: RhythmValues[K], commit: boolean) => {
     const updated = { ...value, [key]: next };
     onChange(updated);
-    if (commit) onCommit(updated);
+    if (commit) onCommit(target, updated);
   };
+  if (tier === "essential") {
+    return (
+      <SystemBlock id="rhythm" title="Rhythm">
+        <SliderField specimen="rhythm:density" label="Density" value={value.density} min={3} max={5} step={0.25} unit="px" disabled={disabled} onChange={(next) => update("density", "density", next, false)} onCommit={(next) => update("density", "density", next, true)} />
+      </SystemBlock>
+    );
+  }
   return (
-    <SystemBlock id="rhythm" title="Rhythm">
-      <SliderField specimen="rhythm:density" label="Density" value={value.density} min={3} max={5} step={0.25} unit="px" disabled={disabled} onChange={(next) => update("density", next, false)} onCommit={(next) => update("density", next, true)} />
-      <SliderField specimen="rhythm:tracking" label="Tracking" value={value.tracking} min={-0.04} max={0.08} step={0.005} unit="em" disabled={disabled} onChange={(next) => update("tracking", next, false)} onCommit={(next) => update("tracking", next, true)} />
-      <SliderField specimen="rhythm:row-height" label="Sidebar row" value={value.rowHeight} min={24} max={40} step={1} unit="px" disabled={disabled} onChange={(next) => update("rowHeight", next, false)} onCommit={(next) => update("rowHeight", next, true)} />
-      <SliderField specimen="rhythm:icon-stroke" label="Icon stroke" value={value.iconStroke} min={1} max={2.5} step={0.05} unit="" disabled={disabled} onChange={(next) => update("iconStroke", next, false)} onCommit={(next) => update("iconStroke", next, true)} />
-      <div data-tp-derived="row-previews" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: SHEET_SPACE.control, marginTop: SHEET_SPACE.control }}>
-        {([
-          ["Pointer", value.rowHeight],
-          ["Touch", Math.max(40, value.rowHeight + 12)],
-        ] as const).map(([label, height]) => (
-          <div key={label} style={{ minWidth: 0 }}>
-            <div style={{ ...TEXT_VALUE, marginBottom: SHEET_SPACE.inline }}>{label} · {height}px</div>
-            <div style={{ height, minHeight: 24, maxHeight: 52, display: "flex", alignItems: "center", gap: value.density * 1.25, padding: `0 ${value.density * 1.5}px`, borderRadius: RADIUS_MD, background: v("sidebar"), color: v("sidebar-foreground"), boxShadow: `inset 0 0 0 1px ${v("sidebar-border", v("border"))}`, overflow: "hidden" }}>
-              <Icon name="MessageSquare" style={{ width: 12, height: 12, strokeWidth: value.iconStroke }} />
-              <span style={{ ...TEXT_LABEL, color: "inherit", fontSize: 10.5, letterSpacing: `${value.tracking}em`, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Theme preview</span>
-            </div>
-          </div>
-        ))}
-      </div>
+    <SystemBlock id="rhythm-advanced" title="Rhythm details">
+      <SliderField specimen="rhythm:tracking" label="Tracking" value={value.tracking} min={-0.04} max={0.08} step={0.005} unit="em" disabled={disabled} onChange={(next) => update("tracking", "tracking", next, false)} onCommit={(next) => update("tracking", "tracking", next, true)} />
+      <SliderField
+        specimen="rhythm:row-height"
+        label="Sidebar row"
+        value={value.rowHeight}
+        min={24}
+        max={40}
+        step={1}
+        unit="px"
+        disabled={disabled}
+        relationship={links.sidebarRow === "linked" ? "Linked to Density" : "Custom"}
+        resetLabel="Reset Sidebar row to Density"
+        onReset={links.sidebarRow === "custom" ? onRestoreRowLink : undefined}
+        onChange={(next) => update("sidebar-row", "rowHeight", next, false)}
+        onCommit={(next) => update("sidebar-row", "rowHeight", next, true)}
+      />
+      <SliderField specimen="rhythm:icon-stroke" label="Icon stroke" value={value.iconStroke} min={1} max={2.5} step={0.05} unit="" disabled={disabled} onChange={(next) => update("icon-stroke", "iconStroke", next, false)} onCommit={(next) => update("icon-stroke", "iconStroke", next, true)} />
     </SystemBlock>
   );
 }
@@ -1447,17 +1484,19 @@ function RadiusEditor({ value, disabled, onChange, onCommit }: {
   return (
     <SystemBlock id="radius" title="Corner radius">
       <SliderField specimen="radius:base" label="Base" value={value} min={0} max={20} step={1} unit="px" disabled={disabled} onChange={onChange} onCommit={onCommit} />
-      <RadiusPreviews value={value} />
     </SystemBlock>
   );
 }
 
-function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
+function ShadowEditor({ tier, value, mode, links, disabled, onChange, onCommit, onRestoreColorLink }: {
+  tier: "essential" | "advanced";
   value: ShadowValues;
   mode: Mode;
+  links: ThemeLinkStates;
   disabled: boolean;
   onChange: (value: ShadowValues) => void;
-  onCommit: (value: ShadowValues) => void;
+  onCommit: (target: ShadowTarget, value: ShadowValues) => void;
+  onRestoreColorLink: () => void;
 }) {
   const colorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingColor = useRef<ShadowValues | null>(null);
@@ -1466,21 +1505,28 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
     colorTimer.current = undefined;
     const next = pendingColor.current;
     pendingColor.current = null;
-    if (next) onCommit(next);
+    if (next) onCommit("color", next);
   };
   useEffect(() => () => {
     if (colorTimer.current !== undefined) clearTimeout(colorTimer.current);
   }, []);
-  const update = <K extends keyof ShadowValues>(key: K, next: ShadowValues[K], commit: boolean) => {
+  const update = <K extends keyof ShadowValues>(target: ShadowTarget, key: K, next: ShadowValues[K], commit: boolean) => {
     const updated = { ...value, [key]: next };
     onChange(updated);
-    if (commit) onCommit(updated);
+    if (commit) onCommit(target, updated);
   };
+  if (tier === "essential") {
+    return (
+      <SystemBlock id="shadow" title="Shadow">
+        <SliderField specimen="shadow:y" label="Y" value={value.y} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("y", "y", next, false)} onCommit={(next) => update("y", "y", next, true)} />
+        <SliderField specimen="shadow:blur" label="Blur" value={value.blur} min={0} max={48} step={1} unit="px" disabled={disabled} onChange={(next) => update("blur", "blur", next, false)} onCommit={(next) => update("blur", "blur", next, true)} />
+        <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", "opacity", next, false)} onCommit={(next) => update("opacity", "opacity", next, true)} />
+      </SystemBlock>
+    );
+  }
+  const colorLink = links.shadowColor[mode];
   return (
-    <SystemBlock id="shadow" title="Shadow">
-      <SliderField specimen="shadow:y" label="Y" value={value.y} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("y", next, false)} onCommit={(next) => update("y", next, true)} />
-      <SliderField specimen="shadow:blur" label="Blur" value={value.blur} min={0} max={48} step={1} unit="px" disabled={disabled} onChange={(next) => update("blur", next, false)} onCommit={(next) => update("blur", next, true)} />
-      <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginTop: SHEET_SPACE.inline }}>Color + opacity · {mode}</div>
+    <SystemBlock id="shadow-advanced" title="Shadow details">
       <div data-tp-specimen="shadow:color" style={COLOR_CONTROL_LAYOUT}>
         <span data-tp-role="label" style={TEXT_LABEL}>Color</span>
         <BbInput
@@ -1500,57 +1546,101 @@ function ShadowEditor({ value, mode, disabled, onChange, onCommit }: {
         />
         <span data-tp-role="value" style={TEXT_VALUE}>{value.color.slice(0, 7)}</span>
       </div>
-      <SliderField specimen="shadow:opacity" label="Opacity" value={value.opacity} min={0} max={80} step={1} unit="%" disabled={disabled} onChange={(next) => update("opacity", next, false)} onCommit={(next) => update("opacity", next, true)} />
-      <div data-tp-shadow-sample="" style={{ display: "flex", alignItems: "center", gap: SHEET_SPACE.control, margin: `${SHEET_SPACE.control}px 8px ${SHEET_SPACE.group}px` }}>
-        <span data-tp-role="support" style={TEXT_SUPPORT}>Live shadow</span>
-        <div data-tp-shadow-preview="" aria-label="Live shadow sample" style={{ width: 48, height: 24, flex: "0 0 auto", borderRadius: RADIUS_MD, background: v("card"), boxShadow: `${value.x}px ${value.y}px ${value.blur}px ${value.spread}px color-mix(in oklab, ${value.color} ${value.opacity}%, transparent)` }} />
+      <div data-tp-shadow-link="" style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 24, marginTop: 2 }}>
+        <span data-tp-link-state="" style={{ ...TEXT_SUPPORT, flex: 1 }}>{colorLink === "linked" ? `Linked to Ink · ${mode}` : `Custom · ${mode}`}</span>
+        {colorLink === "custom" ? (
+          <BbButton type="button" variant="ghost" size="sm" aria-label="Reset Shadow color to Ink" className="h-5 cursor-pointer px-1.5 text-xs" disabled={disabled} onClick={onRestoreColorLink}>Reset</BbButton>
+        ) : null}
       </div>
-      <div data-tp-advanced-geometry="">
-        <h4 data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, margin: `0 0 ${SHEET_SPACE.control}px` }}>Advanced geometry</h4>
-        <SliderField specimen="shadow:x" label="X" value={value.x} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("x", next, false)} onCommit={(next) => update("x", next, true)} />
-        <SliderField specimen="shadow:spread" label="Spread" value={value.spread} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("spread", next, false)} onCommit={(next) => update("spread", next, true)} />
-      </div>
+      <SliderField specimen="shadow:x" label="X" value={value.x} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("x", "x", next, false)} onCommit={(next) => update("x", "x", next, true)} />
+      <SliderField specimen="shadow:spread" label="Spread" value={value.spread} min={-24} max={24} step={1} unit="px" disabled={disabled} onChange={(next) => update("spread", "spread", next, false)} onCommit={(next) => update("spread", "spread", next, true)} />
     </SystemBlock>
   );
 }
 
-/** Area 2 — direct controls first, followed by their always-visible derived values. */
-function StyleSheetSection({ computed, radii, mode, busy, resetRevision, onCommit }: {
+const ESSENTIAL_COLOR_CONTROLS = DIRECT_COLOR_CONTROLS.filter(({ family }) => family !== "status");
+const ADVANCED_COLOR_CONTROLS = DIRECT_COLOR_CONTROLS.filter(({ family }) => family === "status");
+
+/** Area 4 — essential decisions first; advanced direct controls remain visible below. */
+function StyleSheetSection({ computed, radii, mode, links, busy, editEvent, onCommit }: {
   computed: Computed;
   radii: Record<string, string>;
   mode: Mode;
+  links: ThemeLinkStates;
   busy: boolean;
-  resetRevision: number;
+  editEvent: EditEvent | null;
   onCommit: (edit: ThemeEdit) => void;
 }) {
   const [values, setValues] = useState<EditorValues>(DEFAULT_EDITOR_VALUES);
+  const [linkStates, setLinkStates] = useState(links);
+  const committedValues = useRef(DEFAULT_EDITOR_VALUES);
   const ready = Boolean(computed.canvas?.value && computed.ink?.value);
   const radiiRef = useRef(radii);
   radiiRef.current = radii;
   useLayoutEffect(() => {
-    if (ready) setValues(valuesFromComputed(computed, radiiRef.current));
+    if (ready) {
+      const next = valuesFromComputed(computed, radiiRef.current);
+      committedValues.current = next;
+      setValues(next);
+    }
     // Resolved radius specimens update on their own timer. Their identity is
     // not an editor-value revision and must not overwrite an optimistic edit.
-  }, [computed, ready, resetRevision]);
+  }, [computed, ready]);
+  useEffect(() => setLinkStates(links), [links]);
+  useEffect(() => {
+    if (!editEvent) return;
+    if (editEvent.state === "committed") {
+      setValues((current) => {
+        let next = applyCommittedEdit(current, editEvent.edit);
+        // A linked shadow color is the active mode's Ink value. Keep that
+        // visible relationship authoritative immediately after any projected
+        // color response instead of waiting for the stylesheet readback.
+        if (editEvent.edit.kind === "colors" && editEvent.links.shadowColor[editEvent.mode] === "linked") {
+          next = { ...next, shadow: { ...next.shadow, color: next.colors.ink } };
+        }
+        committedValues.current = next;
+        return next;
+      });
+      setLinkStates(editEvent.links);
+    } else {
+      setValues((current) => rollbackFailedEdit(current, committedValues.current, editEvent.edit));
+    }
+  }, [editEvent]);
   const disabled = busy || !ready;
   const setTypography = (typography: TypographyValues) => setValues((current) => ({ ...current, typography }));
   const setRhythm = (rhythm: RhythmValues) => setValues((current) => ({ ...current, rhythm }));
   const setShadow = (shadow: ShadowValues) => setValues((current) => ({ ...current, shadow }));
+  const tierStyle = (advanced = false): CSSProperties => ({
+    minWidth: 0,
+    marginTop: advanced ? SHEET_SPACE.section : 0,
+    paddingTop: advanced ? SHEET_SPACE.section : 0,
+    borderTop: advanced ? `1px solid ${v("border-seam", v("border"))}` : undefined,
+  });
+  const systemGrid: CSSProperties = {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(225px, 1fr))",
+    columnGap: 18, rowGap: SHEET_SPACE.section, alignItems: "start", marginTop: SHEET_SPACE.group,
+  };
   return (
     <div aria-busy={busy || undefined}>
-      <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: SHEET_SPACE.control }}>Mode colors</h3>
-      <ColorEditor
-        values={values.colors}
-        disabled={disabled}
-        onChange={(colors) => setValues((current) => ({ ...current, colors }))}
-        onCommit={(target, colors) => onCommit({ kind: "colors", target, ...colors })}
-      />
-
-      <div data-tp-block="systems" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(225px, 1fr))", columnGap: 18, rowGap: SHEET_SPACE.section, alignItems: "start", marginTop: SHEET_SPACE.section, marginBottom: SHEET_SPACE.group }}>
-        <TypographyEditor value={values.typography} disabled={disabled} onChange={setTypography} onCommit={(typography) => onCommit({ kind: "typography", ...typography })} />
-        <RhythmEditor value={values.rhythm} disabled={disabled} onChange={setRhythm} onCommit={(rhythm) => onCommit({ kind: "rhythm", ...rhythm })} />
-        <RadiusEditor value={values.radius} disabled={disabled} onChange={(radius) => setValues((current) => ({ ...current, radius }))} onCommit={(value) => onCommit({ kind: "radius", value })} />
-        <ShadowEditor value={values.shadow} mode={mode} disabled={disabled} onChange={setShadow} onCommit={(shadow) => onCommit({ kind: "shadow", ...shadow })} />
+      <div data-tp-editor-tier="essential" style={tierStyle()}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: SHEET_SPACE.inline }}>Essentials</h3>
+        <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginBottom: SHEET_SPACE.control }}>Active mode colors</div>
+        <ColorEditor controls={ESSENTIAL_COLOR_CONTROLS} values={values.colors} disabled={disabled} onChange={(colors) => setValues((current) => ({ ...current, colors }))} onCommit={(target, colors) => onCommit({ kind: "colors", target, ...colors })} />
+        <div data-tp-block="systems" style={systemGrid}>
+          <TypographyEditor value={values.typography} disabled={disabled} onChange={setTypography} onCommit={(target, typography) => onCommit({ kind: "typography", target, ...typography })} />
+          <RhythmEditor tier="essential" value={values.rhythm} links={linkStates} disabled={disabled} onChange={setRhythm} onCommit={(target, rhythm) => onCommit({ kind: "rhythm", target, ...rhythm })} onRestoreRowLink={() => onCommit({ kind: "restore-link", target: "sidebar-row" })} />
+          <RadiusEditor value={values.radius} disabled={disabled} onChange={(radius) => setValues((current) => ({ ...current, radius }))} onCommit={(value) => onCommit({ kind: "radius", target: "base", value })} />
+          <ShadowEditor tier="essential" value={values.shadow} mode={mode} links={linkStates} disabled={disabled} onChange={setShadow} onCommit={(target, shadow) => onCommit({ kind: "shadow", target, ...shadow })} onRestoreColorLink={() => onCommit({ kind: "restore-link", target: "shadow-color" })} />
+        </div>
+      </div>
+      <div data-tp-editor-tier="advanced" style={tierStyle(true)}>
+        <h3 data-tp-role="category" style={{ ...TEXT_CATEGORY, marginBottom: SHEET_SPACE.inline, color: v("muted-foreground") }}>Advanced</h3>
+        <div data-tp-role="sublabel" style={{ ...TEXT_SUBLABEL, marginBottom: SHEET_SPACE.control }}>Status colors</div>
+        <ColorEditor controls={ADVANCED_COLOR_CONTROLS} values={values.colors} disabled={disabled} onChange={(colors) => setValues((current) => ({ ...current, colors }))} onCommit={(target, colors) => onCommit({ kind: "colors", target, ...colors })} />
+        <div style={systemGrid}>
+          <RhythmEditor tier="advanced" value={values.rhythm} links={linkStates} disabled={disabled} onChange={setRhythm} onCommit={(target, rhythm) => onCommit({ kind: "rhythm", target, ...rhythm })} onRestoreRowLink={() => onCommit({ kind: "restore-link", target: "sidebar-row" })} />
+          <ShadowEditor tier="advanced" value={values.shadow} mode={mode} links={linkStates} disabled={disabled} onChange={setShadow} onCommit={(target, shadow) => onCommit({ kind: "shadow", target, ...shadow })} onRestoreColorLink={() => onCommit({ kind: "restore-link", target: "shadow-color" })} />
+        </div>
       </div>
     </div>
   );
@@ -1661,7 +1751,14 @@ type Swatch = {
   primary: string | null; accent: string | null; foreground: string | null;
   fontSans: string | null; fontMono: string | null;
 };
-type ThemeEntry = { id: string; name: string; source: "builtin" | "custom" | "plugin"; light: Swatch | null; dark: Swatch | null };
+type ThemeEntry = {
+  id: string;
+  name: string;
+  source: "builtin" | "custom" | "plugin";
+  light: Swatch | null;
+  dark: Swatch | null;
+  links: ThemeLinkStates;
+};
 type Catalog = { activeThemeId: string | null; themes: ThemeEntry[]; revision: number };
 
 const EMPTY_CATALOG: Catalog = { activeThemeId: null, themes: [], revision: 0 };
@@ -1751,13 +1848,11 @@ function ModeSwitch({ mode, disabled, onPick }: { mode: Mode; disabled: boolean;
               disabled && "cursor-not-allowed",
             )}
           >
-            <span
+            <HugeiconsIcon
               aria-hidden
-              style={{
-                width: 12, height: 12, borderRadius: 999,
-                background: option === "light" ? v("canvas", "#fff") : v("foreground"),
-                boxShadow: `inset 0 0 0 1px ${v("border")}`,
-              }}
+              data-tp-mode-icon={option}
+              icon={option === "light" ? Sun03Icon : Moon02Icon}
+              className="size-4"
             />
           </button>
         );
@@ -1853,6 +1948,64 @@ function ThemeForkNotice({
   );
 }
 
+function EditSaveFeedback({ feedback, onRetry }: { feedback: EditFeedback; onRetry: () => void }) {
+  if (feedback.state === "idle") return null;
+  if (feedback.state === "failed") {
+    return (
+      <div data-tp-save-feedback="failed" role="alert" title={feedback.message} style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 32, color: v("destructive-text", v("destructive")) }}>
+        <span style={TEXT_SUPPORT}>Couldn’t save.</span>
+        <span className="sr-only">{feedback.message}</span>
+        <BbButton type="button" variant="ghost" size="sm" className="h-7 cursor-pointer px-2 text-xs" onClick={onRetry}>Retry</BbButton>
+      </div>
+    );
+  }
+  if (feedback.state === "adjusted") {
+    return (
+      <>
+        <span role="status" aria-live="polite" className="sr-only">
+          Saved with {feedback.adjustments.length} automatic {feedback.adjustments.length === 1 ? "adjustment" : "adjustments"}. Details are available.
+        </span>
+        <Popover>
+          <PopoverTrigger asChild>
+            <BbButton
+              data-tp-save-feedback="adjusted"
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label={`Saved with ${feedback.adjustments.length} automatic ${feedback.adjustments.length === 1 ? "adjustment" : "adjustments"}. Show details`}
+              className="h-8 cursor-pointer px-2 text-xs"
+            >
+              Saved · adjusted {feedback.adjustments.length}
+            </BbButton>
+          </PopoverTrigger>
+          <PopoverContent data-tp-adjustment-details="" align="end" className="w-80 p-3">
+            <div className="text-xs font-medium">Adjusted to keep the theme consistent</div>
+            <div className="mt-2 grid gap-2">
+              {feedback.adjustments.map((adjustment, index) => (
+                <div key={`${adjustment.control}:${adjustment.scope}:${index}`} className="rounded-md bg-muted/50 p-2">
+                  <div className="text-xs font-medium">{adjustment.label}</div>
+                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{adjustment.from} → {adjustment.to}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{adjustment.invariant}</div>
+                </div>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </>
+    );
+  }
+  return (
+    <div
+      data-tp-save-feedback={feedback.state}
+      role="status"
+      aria-live="polite"
+      style={{ minHeight: 32, display: "flex", alignItems: "center", ...TEXT_SUPPORT }}
+    >
+      {feedback.state === "saving" ? "Saving…" : "Saved"}
+    </div>
+  );
+}
+
 function ThemePicker({
   catalog,
   computed,
@@ -1903,8 +2056,8 @@ function ThemePicker({
     : `${current?.name ?? "Theme"} ${displayMode}`;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+    <div data-tp-theme-picker="" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, minWidth: 0, maxWidth: "100%" }}>
+      <div data-tp-theme-picker-row="" style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, width: "fit-content", maxWidth: "100%" }}>
         <Select
           value={current?.id ?? ""}
           onValueChange={(themeId) => onPick(themeId, displayMode)}
@@ -1914,11 +2067,12 @@ function ThemePicker({
             aria-busy={unavailable}
             aria-label={accessibleName}
             disabled={unavailable || loading}
-            className="h-8 w-auto min-w-36 max-w-52 gap-2 text-sm disabled:opacity-100"
+            className="h-8 min-w-36 gap-2 overflow-hidden text-sm disabled:opacity-100"
+            style={{ width: "fit-content", maxWidth: "100%", flex: "1 1 auto" }}
           >
-            <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: "1 1 auto" }}>
               <Chips swatch={currentSwatch} w={6} h={11} />
-              <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", minWidth: 0 }}>{loading ? "Loading themes…" : current?.name ?? "Theme"}</span>
+              <span data-tp-theme-name="" style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", minWidth: 0, flex: "1 1 auto" }}>{loading ? "Loading themes…" : current?.name ?? "Theme"}</span>
             </span>
           </SelectTrigger>
           <SelectContent align="end" className="w-56 max-w-[calc(100vw-24px)]">
@@ -1999,7 +2153,8 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const [failedSelection, setFailedSelection] = useState<ThemeSelection | null>(null);
   const [selectionSlow, setSelectionSlow] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
-  const [editResetRevision, setEditResetRevision] = useState(0);
+  const [editFeedback, setEditFeedback] = useState<EditFeedback>({ state: "idle" });
+  const [editEvent, setEditEvent] = useState<EditEvent | null>(null);
   const [forkNotice, setForkNotice] = useState<ForkNotice | null>(null);
   const [forkUndoPending, setForkUndoPending] = useState(false);
   const [forkUndoError, setForkUndoError] = useState<string | null>(null);
@@ -2009,6 +2164,12 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const editingPending = useRef(false);
   const catalogLoadPending = useRef(false);
   const catalogLoadQueued = useRef(false);
+  const editEventId = useRef(0);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => {
+    if (savedTimer.current !== undefined) clearTimeout(savedTimer.current);
+  }, []);
 
   const view = useMemo<View>(() => {
     const first = subPath.split("/").filter(Boolean)[0] ?? "";
@@ -2098,6 +2259,8 @@ function PreviewPage({ subPath }: { subPath: string }) {
       setForkUndoError(null);
     }
     setMode(selection.mode);
+    if (savedTimer.current !== undefined) clearTimeout(savedTimer.current);
+    setEditFeedback({ state: "idle" });
     // Always send the explicit choice. The catalog reflects the last completed
     // apply, so it can be stale while a slower selection is still in flight.
     selectionPending.current = true;
@@ -2135,12 +2298,21 @@ function PreviewPage({ subPath }: { subPath: string }) {
     }
     editingPending.current = true;
     setEditBusy(true);
+    if (savedTimer.current !== undefined) clearTimeout(savedTimer.current);
+    setEditFeedback({ state: "saving" });
     setError(null);
     const request = catalogRequests.current.begin();
     withRpcTimeout(rpc.call("editTheme", { themeId, mode, edit }), "Theme edit")
       .then((result) => {
         if (!catalogRequests.current.isLatest(request)) return;
         commitCatalog(result.catalog, setCatalog);
+        setEditEvent({ id: ++editEventId.current, state: "committed", edit: result.committedEdit, links: result.links, mode });
+        if (result.adjustments.length > 0) {
+          setEditFeedback({ state: "adjusted", adjustments: result.adjustments });
+        } else {
+          setEditFeedback({ state: "saved" });
+          savedTimer.current = setTimeout(() => setEditFeedback({ state: "idle" }), 2_000);
+        }
         if (result.forkedFrom && result.undoToken) {
           const copy = result.catalog.themes.find((theme) => theme.id === result.themeId);
           const source = catalog.themes.find((theme) => theme.id === result.forkedFrom);
@@ -2158,8 +2330,9 @@ function PreviewPage({ subPath }: { subPath: string }) {
       })
       .catch((cause) => {
         if (!catalogRequests.current.isLatest(request)) return;
-        setEditResetRevision((current) => current + 1);
-        toast.error("Theme edit failed", { description: cause instanceof Error ? cause.message : String(cause) });
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setEditEvent({ id: ++editEventId.current, state: "failed", edit });
+        setEditFeedback({ state: "failed", edit, message });
       })
       .finally(() => {
         if (!catalogRequests.current.isLatest(request)) return;
@@ -2181,7 +2354,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
       .then((next) => {
         if (!catalogRequests.current.isLatest(request)) return;
         commitCatalog(next, setCatalog);
-        setEditResetRevision((current) => current + 1);
+        setEditFeedback({ state: "idle" });
         setForkNotice(null);
         setForkAnnouncement(`Removed ${notice.copyName}. Restored ${notice.sourceName}.`);
       })
@@ -2208,6 +2381,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
   const contentInset = contentInsetForWidth(layout.width);
   const displayThemeId = pendingSelection?.themeId ?? catalog.activeThemeId;
   const displayThemeName = catalog.themes.find((theme) => theme.id === displayThemeId)?.name ?? "Current theme";
+  const activeLinks = catalog.themes.find((theme) => theme.id === catalog.activeThemeId)?.links ?? DEFAULT_LINK_STATES;
 
   return (
     <div ref={rootRef} data-tp-root data-tp-band={layout.band} style={{ height: "100%", overflowY: "auto", overflowX: "hidden", background: v("canvas", v("background")), color: v("foreground"), fontFamily: SANS, letterSpacing: v("tracking-normal", "0em") }}>
@@ -2224,7 +2398,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
           </Tabs>
           <div style={{ flex: 1 }} />
           {error ? <span style={{ fontSize: 12, color: v("destructive-text", v("destructive")) }}>{error}</span> : null}
-          <div style={{ flex: mobile ? "1 1 100%" : "none", minWidth: 0, display: "flex", alignItems: "flex-start", justifyContent: "flex-end", gap: space(1) }}>
+          <div style={{ flex: mobile ? "1 1 100%" : "0 1 auto", minWidth: 0, display: "flex", alignItems: "flex-start", justifyContent: "flex-end", gap: space(1) }}>
             <ThemePicker
               catalog={catalog}
               computed={computed}
@@ -2235,6 +2409,12 @@ function PreviewPage({ subPath }: { subPath: string }) {
               selectionFailed={failedSelection !== null}
               onPick={pick}
               onRetry={retrySelection}
+            />
+            <EditSaveFeedback
+              feedback={editFeedback}
+              onRetry={() => {
+                if (editFeedback.state === "failed") commitEdit(editFeedback.edit);
+              }}
             />
             {forkNotice ? (
               <ThemeForkNotice
@@ -2296,7 +2476,7 @@ function PreviewPage({ subPath }: { subPath: string }) {
           <div style={{ marginTop: space(3) }}>
             {area === "overlays" ? <OverlaySpecimens vertical />
               : area === "components" ? <ComponentsSection />
-              : <StyleSheetSection computed={computed} radii={radii} mode={mode} busy={editBusy} resetRevision={editResetRevision} onCommit={commitEdit} />}
+              : <StyleSheetSection computed={computed} radii={radii} mode={mode} links={activeLinks} busy={editBusy} editEvent={editEvent} onCommit={commitEdit} />}
           </div>
         </section>
       ))}

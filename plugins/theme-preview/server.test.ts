@@ -298,6 +298,40 @@ describe("createCatalogLoader", () => {
     expect(setCalls).toEqual(["theme-b"]);
     await rm(directory, { recursive: true, force: true });
   });
+
+  it("increments once for an editor write, deduplicates its watcher echo, then increments for an external write", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "theme-preview-revision-"));
+    const themeDirectory = join(directory, "theme-a");
+    const filePath = join(themeDirectory, "theme.css");
+    await mkdir(themeDirectory);
+    await writeFile(filePath, ":root { --canvas: #ffffff; }");
+    const setCalls: string[] = [];
+    const bb = {
+      sdk: {
+        theme: {
+          catalog: async () => ({ active: { themeId: "theme-a" }, custom: ["theme-a"], dir: directory }),
+          set: async (themeId: string) => { setCalls.push(themeId); },
+        },
+        plugins: { list: async () => ({ plugins: [] }) },
+      },
+      log: { info() {}, warn() {} },
+    } as unknown as BbPluginApi;
+
+    try {
+      const loader = createCatalogLoader(bb);
+      expect((await loader.catalog()).revision).toBe(0);
+
+      await writeFile(filePath, ":root { --canvas: #eeeeee; }\n/* editor */");
+      expect((await loader.applyEditedTheme("theme-a", filePath)).revision).toBe(1);
+      expect((await loader.catalog()).revision).toBe(1);
+
+      await writeFile(filePath, ":root { --canvas: #dddddd; }\n/* external and longer */");
+      expect((await loader.catalog()).revision).toBe(2);
+      expect(setCalls).toEqual(["theme-a", "theme-a"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("theme watcher", () => {
@@ -345,10 +379,13 @@ describe("editTheme RPC", () => {
     const setCalls: string[] = [];
     let handlers!: {
       editTheme(input: ThemeEditInput): Promise<{
-        catalog: { activeThemeId: string | null; themes: Array<{ id: string; source: string }> };
+        catalog: { activeThemeId: string | null; themes: Array<{ id: string; source: string; links: { sidebarRow: string } }>; revision: number };
         themeId: string;
         forkedFrom: string | null;
         undoToken: string | null;
+        committedEdit: ThemeEditInput["edit"];
+        adjustments: Array<{ control: string }>;
+        links: { sidebarRow: string };
       }>;
       undoThemeFork(input: { undoToken: string }): Promise<{
         activeThemeId: string | null;
@@ -408,7 +445,12 @@ describe("editTheme RPC", () => {
       expect(result.themeId).toBe("default-copy");
       expect(result.forkedFrom).toBe("default");
       expect(result.undoToken).toEqual(expect.any(String));
+      expect(result.committedEdit).toMatchObject({ kind: "colors", target: "primary", primary: "#2255cc" });
+      expect(result.adjustments).toEqual([]);
+      expect(result.links).toEqual(expect.objectContaining({ sidebarRow: expect.any(String) }));
       expect(result.catalog.activeThemeId).toBe("default-copy");
+      expect(result.catalog.revision).toBe(1);
+      expect(result.catalog.themes.find((theme) => theme.id === "default-copy")?.links).toEqual(result.links);
       expect(result.catalog.themes.find((theme) => theme.id === "default-copy")?.source).toBe("custom");
       expect(setCalls).toEqual(["default-copy"]);
       expect(await readFile(join(directory, "default-copy", "theme.css"), "utf8"))
@@ -451,6 +493,7 @@ describe("buildCatalog", () => {
     expect(nord?.light?.canvas).toBe("#eceff4");
     expect(out.themes[0].light?.canvas).toBe("#f4f4f4");
     expect(out.themes[1].light).toBeNull();
+    expect(out.themes[0].links).toEqual({ sidebarRow: "linked", shadowColor: { light: "linked", dark: "linked" } });
     expect(out.revision).toBe(0);
   });
 
@@ -462,5 +505,22 @@ describe("buildCatalog", () => {
     );
 
     expect(out.themes.find((theme) => theme.id === "nord-copy")?.name).toBe("Nord copy");
+  });
+
+  it("reloads durable linked and custom relationship state from theme CSS", async () => {
+    const out = await buildCatalog(
+      { active: { themeId: "linked" }, custom: ["linked", "custom"], plugins: [] },
+      async (id) => id === "linked"
+        ? `/* theme-preview:managed:start */
+:root { --bb-sidebar-row-height: calc(20px + var(--spacing) + var(--spacing)); }
+:root:not(.dark), .light:not(.dark) { --tp-shadow-color: var(--ink); }
+/* theme-preview:managed:end */`
+        : ":root { --bb-sidebar-row-height: 31px; --shadow-color: #222222; }",
+    );
+
+    expect(out.themes.find(({ id }) => id === "linked")?.links)
+      .toEqual({ sidebarRow: "linked", shadowColor: { light: "linked", dark: "linked" } });
+    expect(out.themes.find(({ id }) => id === "custom")?.links)
+      .toEqual({ sidebarRow: "custom", shadowColor: { light: "custom", dark: "custom" } });
   });
 });

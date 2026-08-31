@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { z } from "zod";
+import { DIRECT_COLOR_CONTROLS } from "./taxonomy";
 
 const cssHexColorSchema = z
   .string()
@@ -52,6 +53,7 @@ export const themeEditSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("typography"),
+      target: z.enum(["font-sans", "font-mono", "text-scale", "line-height"]),
       fontSans: fontStackSchema,
       fontMono: fontStackSchema,
       textScale: finiteNumber().min(0.9).max(1.1),
@@ -61,22 +63,30 @@ export const themeEditSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("rhythm"),
+      target: z.enum(["density", "tracking", "sidebar-row", "icon-stroke"]),
       density: finiteNumber().min(3).max(5),
       tracking: finiteNumber().min(-0.04).max(0.08),
       rowHeight: finiteNumber().min(24).max(40),
       iconStroke: finiteNumber().min(1).max(2.5),
     })
     .strict(),
-  z.object({ kind: z.literal("radius"), value: finiteNumber().min(0).max(20) }).strict(),
+  z.object({ kind: z.literal("radius"), target: z.literal("base"), value: finiteNumber().min(0).max(20) }).strict(),
   z
     .object({
       kind: z.literal("shadow"),
+      target: z.enum(["x", "y", "blur", "spread", "color", "opacity"]),
       x: finiteNumber().min(-24).max(24),
       y: finiteNumber().min(-24).max(24),
       blur: finiteNumber().min(0).max(48),
       spread: finiteNumber().min(-24).max(24),
       color: cssHexColorSchema,
       opacity: finiteNumber().int().min(0).max(80),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("restore-link"),
+      target: z.enum(["sidebar-row", "shadow-color"]),
     })
     .strict(),
 ]);
@@ -98,6 +108,20 @@ export type UndoThemeForkInput = z.infer<typeof undoThemeForkInputSchema>;
 
 export type ThemeSourceKind = "builtin" | "custom" | "plugin";
 
+export interface ThemeLinkStates {
+  sidebarRow: "linked" | "custom";
+  shadowColor: { light: "linked" | "custom"; dark: "linked" | "custom" };
+}
+
+export interface ThemeEditAdjustment {
+  control: string;
+  label: string;
+  scope: "shared" | "light" | "dark";
+  from: string;
+  to: string;
+  invariant: string;
+}
+
 export interface EditableThemeResource {
   id: string;
   name: string;
@@ -110,7 +134,7 @@ export interface EditableThemeResource {
 
 interface ThemeEditorDependencies<Catalog> {
   resolveTheme(themeId: string): Promise<EditableThemeResource>;
-  applyTheme(themeId: string): Promise<Catalog>;
+  applyTheme(themeId: string, filePath: string): Promise<Catalog>;
   selectTheme(themeId: string): Promise<void>;
   loadCatalog(): Promise<Catalog>;
 }
@@ -120,6 +144,9 @@ export interface ThemeEditResult<Catalog> {
   themeId: string;
   forkedFrom: string | null;
   undoToken: string | null;
+  committedEdit: ThemeEditInput["edit"];
+  adjustments: ThemeEditAdjustment[];
+  links: ThemeLinkStates;
 }
 
 const MANAGED_START = "/* theme-preview:managed:start */";
@@ -140,22 +167,66 @@ interface ForkUndoRecord {
 type Mode = "light" | "dark";
 type DeclarationMap = Map<string, string>;
 type ColorEdit = Extract<z.infer<typeof themeEditSchema>, { kind: "colors" }>;
+type ColorValueKey = Exclude<keyof ColorEdit, "kind" | "target">;
+type ColorFamily = "anchors" | "sidebar" | "primary" | "timeline" | "status";
+type Rgba = readonly [number, number, number, number];
 
-const COLOR_TARGET_FAMILY: Record<ColorEdit["target"], "anchors" | "sidebar" | "primary" | "timeline" | "status"> = {
+const COLOR_TARGET_KEY = {
+  canvas: "canvas",
+  ink: "ink",
+  sidebar: "sidebar",
+  "sidebar-foreground": "sidebarForeground",
+  primary: "primary",
+  "timeline-accent": "timelineAccent",
+  success: "success",
+  warning: "warning",
+  attention: "attention",
+  destructive: "destructive",
+  "pr-merged": "prMerged",
+} as const satisfies Record<ColorEdit["target"], ColorValueKey>;
+
+const COLOR_KEY_FAMILY = {
   canvas: "anchors",
   ink: "anchors",
   sidebar: "sidebar",
-  "sidebar-foreground": "sidebar",
+  sidebarForeground: "sidebar",
   primary: "primary",
-  "timeline-accent": "timeline",
+  timelineAccent: "timeline",
   success: "status",
   warning: "status",
   attention: "status",
   destructive: "status",
-  "pr-merged": "status",
-};
+  prMerged: "status",
+} as const satisfies Record<ColorValueKey, ColorFamily>;
 
-function parseHexColor(value: string): readonly [number, number, number, number] {
+interface ColorRelationship {
+  label: string;
+  subject: ColorValueKey;
+  surface: ColorValueKey;
+  minimum: number;
+}
+
+/** Direct color relationships already expressed by the editor's Theme safety row. */
+function colorRelationships(mode: Mode): readonly ColorRelationship[] {
+  return [
+    { label: "Canvas / ink", subject: "ink", surface: "canvas", minimum: 4.5 },
+    { label: "Sidebar / sidebar ink", subject: "sidebarForeground", surface: "sidebar", minimum: 4.5 },
+    { label: "Primary controls", subject: "primary", surface: "canvas", minimum: 4.5 },
+    { label: "Timeline / files", subject: "timelineAccent", surface: "canvas", minimum: 4.5 },
+    { label: "Success", subject: "success", surface: "canvas", minimum: 4.5 },
+    { label: "Warning", subject: "warning", surface: "canvas", minimum: 4.5 },
+    { label: "Attention / pending", subject: "attention", surface: "canvas", minimum: 3 },
+    {
+      label: "Destructive controls",
+      subject: "destructive",
+      surface: mode === "dark" ? "ink" : "canvas",
+      minimum: 4.5,
+    },
+    { label: "Merged", subject: "prMerged", surface: "canvas", minimum: 4.5 },
+  ];
+}
+
+function parseHexColor(value: string): Rgba {
   const hex = value.slice(1);
   return [
     Number.parseInt(hex.slice(0, 2), 16),
@@ -165,7 +236,7 @@ function parseHexColor(value: string): readonly [number, number, number, number]
   ];
 }
 
-function composite(foreground: readonly [number, number, number, number], background: readonly [number, number, number, number]): readonly [number, number, number, number] {
+function composite(foreground: Rgba, background: Rgba): Rgba {
   const alpha = foreground[3] + background[3] * (1 - foreground[3]);
   if (alpha === 0) return [0, 0, 0, 0];
   return [
@@ -176,7 +247,7 @@ function composite(foreground: readonly [number, number, number, number], backgr
   ];
 }
 
-function relativeLuminance(color: readonly [number, number, number, number]): number {
+function relativeLuminance(color: Rgba): number {
   const linear = (channel: number) => {
     const normalized = channel / 255;
     return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
@@ -192,69 +263,80 @@ function hexContrast(foreground: string, background: string): number {
   return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
-function requireContrast(label: string, foreground: string, background: string, minimum: number): void {
-  const ratio = hexContrast(foreground, background);
-  if (ratio >= minimum) return;
-  throw new Error(`${label} would be ${ratio.toFixed(1)}:1. Choose colors that keep it at ${minimum.toFixed(1)}:1 or better.`);
+function serializeHexColor(color: Rgba): string {
+  const byte = (value: number) => Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
+  const alpha = Math.round(Math.min(1, Math.max(0, color[3])) * 255);
+  return `#${byte(color[0])}${byte(color[1])}${byte(color[2])}${alpha < 255 ? byte(alpha) : ""}`;
+}
+
+function interpolateColor(start: Rgba, pole: Rgba, amount: number): Rgba {
+  return [
+    start[0] + (pole[0] - start[0]) * amount,
+    start[1] + (pole[1] - start[1]) * amount,
+    start[2] + (pole[2] - start[2]) * amount,
+    start[3] + (pole[3] - start[3]) * amount,
+  ];
+}
+
+/** Find the smallest visible adjustment toward black or white that restores a relationship. */
+function deriveContrastingColor(value: string, surface: string, minimum: number): string {
+  if (hexContrast(value, surface) >= minimum) return value;
+  const start = parseHexColor(value);
+  const candidates: Array<{ value: string; distance: number }> = [];
+  for (const pole of [[0, 0, 0, 1], [255, 255, 255, 1]] as const satisfies readonly Rgba[]) {
+    for (let step = 1; step <= 2048; step += 1) {
+      const candidate = serializeHexColor(interpolateColor(start, pole, step / 2048));
+      if (hexContrast(candidate, surface) < minimum) continue;
+      const resolved = parseHexColor(candidate);
+      const distance = (resolved[0] - start[0]) ** 2
+        + (resolved[1] - start[1]) ** 2
+        + (resolved[2] - start[2]) ** 2
+        + ((resolved[3] - start[3]) * 255) ** 2;
+      candidates.push({ value: candidate, distance });
+      break;
+    }
+  }
+  candidates.sort((first, second) => first.distance - second.distance || first.value.localeCompare(second.value));
+  const best = candidates[0];
+  if (!best) throw new Error(`Could not derive a color with ${minimum.toFixed(1)}:1 contrast against ${surface}`);
+  return best.value;
 }
 
 /**
- * A syntactically valid color can still strand text or controls against the
- * active canvas. Validate the relationship owned by the exact control before
- * a durable custom theme is written.
+ * Project the edited palette through its directional relationships. The user
+ * controls the selected seed; subjects that depend on a changed surface move
+ * only as far as needed to keep the palette valid.
  */
-function assertColorEditSafety(mode: Mode, edit: ColorEdit): void {
-  switch (edit.target) {
-    case "canvas": {
-      requireContrast("Canvas / ink", edit.ink, edit.canvas, 4.5);
-      const checks: ReadonlyArray<readonly [string, string, number]> = [
-        ["Primary controls", edit.primary, 3],
-        ["Timeline / files", edit.timelineAccent, 4.5],
-        ["Success", edit.success, 4.5],
-        ["Warning", edit.warning, 4.5],
-        ["Attention / pending", edit.attention, 3],
-        ["Destructive controls", edit.destructive, 3],
-        ["Merged", edit.prMerged, 4.5],
-      ];
-      const failures = checks
-        .map(([label, value, minimum]) => ({ label, minimum, ratio: hexContrast(value, edit.canvas) }))
-        .filter(({ minimum, ratio }) => ratio < minimum);
-      if (failures.length > 0) {
-        const summary = failures.slice(0, 3).map(({ label, ratio }) => `${label} ${ratio.toFixed(1)}:1`).join(", ");
-        const remainder = failures.length > 3 ? `, and ${failures.length - 3} more` : "";
-        throw new Error(`Canvas would make ${summary}${remainder}. Keep text at 4.5:1 and controls at 3.0:1 or better.`);
-      }
-      break;
+function resolveColorRelationships(mode: Mode, edit: ColorEdit): { edit: ColorEdit; families: ReadonlySet<ColorFamily> } {
+  const resolved: ColorEdit = { ...edit };
+  const target = COLOR_TARGET_KEY[edit.target];
+  const affected = new Set<ColorValueKey>([target]);
+  const families = new Set<ColorFamily>([COLOR_KEY_FAMILY[target]]);
+  const relationships = colorRelationships(mode);
+
+  for (let pass = 0; pass < relationships.length; pass += 1) {
+    let changed = false;
+    for (const relationship of relationships) {
+      if (relationship.subject !== target && !affected.has(relationship.surface)) continue;
+      const current = resolved[relationship.subject];
+      const next = deriveContrastingColor(current, resolved[relationship.surface], relationship.minimum);
+      if (next === current) continue;
+      resolved[relationship.subject] = next;
+      affected.add(relationship.subject);
+      families.add(COLOR_KEY_FAMILY[relationship.subject]);
+      changed = true;
     }
-    case "ink":
-      requireContrast("Canvas / ink", edit.ink, edit.canvas, 4.5);
-      break;
-    case "sidebar":
-    case "sidebar-foreground":
-      requireContrast("Sidebar / sidebar ink", edit.sidebarForeground, edit.sidebar, 4.5);
-      break;
-    case "primary":
-      requireContrast("Primary controls", edit.primary, edit.canvas, 4.5);
-      break;
-    case "timeline-accent":
-      requireContrast("Timeline / files", edit.timelineAccent, edit.canvas, 4.5);
-      break;
-    case "success":
-      requireContrast("Success", edit.success, edit.canvas, 4.5);
-      break;
-    case "warning":
-      requireContrast("Warning", edit.warning, edit.canvas, 4.5);
-      break;
-    case "attention":
-      requireContrast("Attention / pending", edit.attention, edit.canvas, 3);
-      break;
-    case "destructive":
-      requireContrast("Destructive controls", edit.destructive, mode === "dark" ? edit.ink : edit.canvas, 4.5);
-      break;
-    case "pr-merged":
-      requireContrast("Merged", edit.prMerged, edit.canvas, 4.5);
-      break;
+    if (!changed) break;
   }
+
+  for (const relationship of relationships) {
+    if (!affected.has(relationship.subject) && !affected.has(relationship.surface)) continue;
+    const ratio = hexContrast(resolved[relationship.subject], resolved[relationship.surface]);
+    if (ratio < relationship.minimum) {
+      throw new Error(`${relationship.label} could not be kept at ${relationship.minimum.toFixed(1)}:1 or better`);
+    }
+  }
+  return { edit: resolved, families };
 }
 
 interface ManagedDeclarations {
@@ -417,6 +499,72 @@ function parseManagedDeclarations(css: string): ManagedDeclarations {
     else if (selector === ".dark") parseDeclarations(match[2], result.dark);
   }
   return result;
+}
+
+const LINKED_SIDEBAR_ROW = "calc(20px + var(--spacing) + var(--spacing))";
+const LINKED_SIDEBAR_ROW_COARSE = "max(40px, calc(var(--bb-sidebar-row-height) + 12px))";
+const LINKED_SHADOW_COLOR = "var(--ink)";
+
+function normalizeCssRelationship(value: string): string {
+  return value.replace(/\s+/g, "");
+}
+
+function sourceDeclarations(css: string): ManagedDeclarations {
+  const result = emptyManagedDeclarations();
+  const range = managedRange(css);
+  const source = (range ? `${css.slice(0, range.start)}${css.slice(range.end)}` : css)
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1].split(",").map((selector) => selector.trim());
+    if (selectors.some((selector) => selector === ":root")) parseDeclarations(match[2], result.shared);
+    if (selectors.some((selector) => selector === ".light" || selector === ".light:not(.dark)" || selector === ":root:not(.dark)" || selector === "html:not(.dark)")) {
+      parseDeclarations(match[2], result.light);
+    }
+    if (selectors.some((selector) => selector === ".dark" || selector === ":root.dark" || selector === "html.dark")) {
+      parseDeclarations(match[2], result.dark);
+    }
+  }
+  return result;
+}
+
+function effectiveDeclaration(
+  managed: ManagedDeclarations,
+  source: ManagedDeclarations,
+  mode: Mode,
+  name: string,
+): string | undefined {
+  return managed[mode].get(name)
+    ?? managed.shared.get(name)
+    ?? source[mode].get(name)
+    ?? source.shared.get(name);
+}
+
+/** Relationship state is encoded in the existing managed declarations. */
+export function classifyThemeLinks(css: string): ThemeLinkStates {
+  const managed = parseManagedDeclarations(css);
+  const source = sourceDeclarations(css);
+  const managedRow = managed.shared.get("bb-sidebar-row-height");
+  const sidebarRow = managedRow !== undefined
+    ? normalizeCssRelationship(managedRow) === normalizeCssRelationship(LINKED_SIDEBAR_ROW) ? "linked" : "custom"
+    : source.shared.has("bb-sidebar-row-height")
+      || source.light.has("bb-sidebar-row-height")
+      || source.dark.has("bb-sidebar-row-height")
+      ? "custom"
+      : "linked";
+
+  const shadowColor = (mode: Mode): "linked" | "custom" => {
+    const managedValue = managed[mode].get("tp-shadow-color");
+    if (managedValue !== undefined) {
+      return normalizeCssRelationship(managedValue) === normalizeCssRelationship(LINKED_SHADOW_COLOR) ? "linked" : "custom";
+    }
+    const hasSourceValue = source[mode].has("tp-shadow-color")
+      || source[mode].has("shadow-color")
+      || source.shared.has("tp-shadow-color")
+      || source.shared.has("shadow-color");
+    return hasSourceValue ? "custom" : "linked";
+  };
+
+  return { sidebarRow, shadowColor: { light: shadowColor("light"), dark: shadowColor("dark") } };
 }
 
 function renderDeclarationBlock(selector: string, declarations: DeclarationMap): string {
@@ -608,8 +756,8 @@ const SHADOW_MODE_TOKENS = [
   "shadow-sm", "shadow", "shadow-md", "shadow-lift", "shadow-lg", "shadow-xl", "shadow-2xl",
 ] as const;
 
-function shadowColor(color: string, opacity: number, factor: number): string {
-  return `color-mix(in oklab, ${color} ${formatNumber(Math.min(100, opacity * factor))}%, transparent)`;
+function shadowColor(colorExpression: string, opacity: number, factor: number): string {
+  return `color-mix(in oklab, ${colorExpression} ${formatNumber(Math.min(100, opacity * factor))}%, transparent)`;
 }
 
 function shadowLayer(
@@ -618,70 +766,206 @@ function shadowLayer(
   blurAddition: number,
   spreadAddition: number,
   opacityFactor: number,
+  colorExpression: string,
 ): string {
-  return `${px(edit.x * depth)} ${px(edit.y * depth)} ${px(edit.blur + blurAddition)} ${px(edit.spread + spreadAddition)} ${shadowColor(edit.color, edit.opacity, opacityFactor)}`;
+  return `${px(edit.x * depth)} ${px(edit.y * depth)} ${px(edit.blur + blurAddition)} ${px(edit.spread + spreadAddition)} ${shadowColor(colorExpression, edit.opacity, opacityFactor)}`;
 }
 
-function shadowDeclarations(edit: Extract<ThemeEditInput["edit"], { kind: "shadow" }>): Record<string, string> {
-  const sm = `${shadowLayer(edit, 1, 0, 0, 0.75)}, ${shadowLayer(edit, 0.5, 2, -1, 0.75)}`;
+function shadowDeclarations(
+  edit: Extract<ThemeEditInput["edit"], { kind: "shadow" }>,
+  colorValue: string,
+): Record<string, string> {
+  const colorExpression = "var(--tp-shadow-color)";
+  const layer = (depth: number, blurAddition: number, spreadAddition: number, opacityFactor: number) =>
+    shadowLayer(edit, depth, blurAddition, spreadAddition, opacityFactor, colorExpression);
+  const sm = `${layer(1, 0, 0, 0.75)}, ${layer(0.5, 2, -1, 0.75)}`;
   return {
-    "tp-shadow-color": edit.color,
+    "tp-shadow-color": colorValue,
     "tp-shadow-opacity-percent": formatNumber(edit.opacity),
     "shadow-opacity": formatNumber(edit.opacity / 100),
-    "shadow-color": shadowColor(edit.color, edit.opacity, 1),
-    "shadow-2xs": shadowLayer(edit, 0.5, 0, 0, 0.45),
-    "shadow-xs": shadowLayer(edit, 0.75, 0, 0, 0.45),
+    "shadow-color": shadowColor(colorExpression, edit.opacity, 1),
+    "shadow-2xs": layer(0.5, 0, 0, 0.45),
+    "shadow-xs": layer(0.75, 0, 0, 0.45),
     "shadow-sm": sm,
     shadow: sm,
-    "shadow-md": `${shadowLayer(edit, 1, 0, 0, 0.75)}, ${shadowLayer(edit, 1, 4, -1, 1)}`,
-    "shadow-lift": `${px(edit.x)} ${px(-Math.max(4, Math.abs(edit.y) * 2))} ${px(edit.blur + 12)} ${px(edit.spread - 4)} ${shadowColor(edit.color, edit.opacity, 0.45)}`,
-    "shadow-lg": `${shadowLayer(edit, 1, 0, 0, 0.75)}, ${shadowLayer(edit, 2, 8, -1, 1)}`,
-    "shadow-xl": `${shadowLayer(edit, 1, 0, 0, 0.85)}, ${shadowLayer(edit, 4, 12, -2, 1)}`,
-    "shadow-2xl": shadowLayer(edit, 6, 24, -4, 1.4),
+    "shadow-md": `${layer(1, 0, 0, 0.75)}, ${layer(1, 4, -1, 1)}`,
+    "shadow-lift": `${px(edit.x)} ${px(-Math.max(4, Math.abs(edit.y) * 2))} ${px(edit.blur + 12)} ${px(edit.spread - 4)} ${shadowColor(colorExpression, edit.opacity, 0.45)}`,
+    "shadow-lg": `${layer(1, 0, 0, 0.75)}, ${layer(2, 8, -1, 1)}`,
+    "shadow-xl": `${layer(1, 0, 0, 0.85)}, ${layer(4, 12, -2, 1)}`,
+    "shadow-2xl": layer(6, 24, -4, 1.4),
   };
 }
 
-/** Update exactly one editor-owned family while retaining every other family. */
-export function applyThemeEdit(css: string, input: Pick<ThemeEditInput, "mode" | "edit">): string {
+const COLOR_ADJUSTMENT_ORDER: readonly ColorValueKey[] = DIRECT_COLOR_CONTROLS.map(({ id }) => COLOR_TARGET_KEY[id]);
+
+function colorControl(key: ColorValueKey): { control: string; label: string } {
+  const entry = DIRECT_COLOR_CONTROLS.find(({ id }) => COLOR_TARGET_KEY[id] === key);
+  if (!entry) throw new Error(`Missing Theme Preview taxonomy entry for ${key}`);
+  return { control: `color:${entry.id}`, label: entry.label };
+}
+
+export interface AppliedThemeEdit {
+  css: string;
+  committedEdit: ThemeEditInput["edit"];
+  adjustments: ThemeEditAdjustment[];
+  links: ThemeLinkStates;
+}
+
+function numberDeclaration(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function bounded(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+/** Update the directly edited family and any affected dependent families. */
+export function applyThemeEditWithEffects(
+  css: string,
+  input: Pick<ThemeEditInput, "mode" | "edit">,
+): AppliedThemeEdit {
   const declarations = parseManagedDeclarations(css);
+  const source = sourceDeclarations(css);
+  const linksBefore = classifyThemeLinks(css);
   const target = declarations[input.mode];
   const { edit } = input;
+  let committedEdit: ThemeEditInput["edit"] = edit;
+  const adjustments: ThemeEditAdjustment[] = [];
 
   switch (edit.kind) {
     case "colors": {
-      assertColorEditSafety(input.mode, edit);
-      const family = COLOR_TARGET_FAMILY[edit.target];
-      if (family === "anchors") replaceDeclarations(target, ANCHOR_TOKENS, anchorDeclarations(input.mode, edit.canvas, edit.ink));
-      else if (family === "sidebar") replaceDeclarations(target, SIDEBAR_TOKENS, sidebarDeclarations(input.mode, edit.sidebar, edit.sidebarForeground));
-      else if (family === "primary") replaceDeclarations(target, PRIMARY_TOKENS, primaryDeclarations(input.mode, edit.primary));
-      else if (family === "timeline") replaceDeclarations(target, TIMELINE_TOKENS, { "timeline-accent": edit.timelineAccent, "file-accent": "var(--timeline-accent)" });
-      else replaceDeclarations(target, STATUS_TOKENS, statusDeclarations(input.mode, edit));
+      const resolved = resolveColorRelationships(input.mode, edit);
+      committedEdit = resolved.edit;
+      if (resolved.families.has("anchors")) {
+        replaceDeclarations(target, ANCHOR_TOKENS, anchorDeclarations(input.mode, resolved.edit.canvas, resolved.edit.ink));
+      }
+      if (resolved.families.has("sidebar")) {
+        replaceDeclarations(target, SIDEBAR_TOKENS, sidebarDeclarations(input.mode, resolved.edit.sidebar, resolved.edit.sidebarForeground));
+      }
+      if (resolved.families.has("primary")) {
+        replaceDeclarations(target, PRIMARY_TOKENS, primaryDeclarations(input.mode, resolved.edit.primary));
+      }
+      if (resolved.families.has("timeline")) {
+        replaceDeclarations(target, TIMELINE_TOKENS, { "timeline-accent": resolved.edit.timelineAccent, "file-accent": "var(--timeline-accent)" });
+      }
+      if (resolved.families.has("status")) {
+        replaceDeclarations(target, STATUS_TOKENS, statusDeclarations(input.mode, resolved.edit));
+      }
+      const relationships = colorRelationships(input.mode);
+      for (const key of COLOR_ADJUSTMENT_ORDER) {
+        if (resolved.edit[key] === edit[key]) continue;
+        const relationship = relationships.find(({ subject }) => subject === key);
+        const control = colorControl(key);
+        adjustments.push({
+          ...control,
+          scope: input.mode,
+          from: edit[key],
+          to: resolved.edit[key],
+          invariant: relationship
+            ? `${relationship.label} stays at ${relationship.minimum.toFixed(1)}:1 or better`
+            : "Theme relationship remains valid",
+        });
+      }
+      if (edit.target === "ink" && linksBefore.shadowColor[input.mode] === "linked") {
+        const previousInk = effectiveDeclaration(declarations, source, input.mode, "ink");
+        if (previousInk !== undefined && previousInk !== resolved.edit.ink) {
+          adjustments.push({
+            control: "shadow:color",
+            label: "Shadow color",
+            scope: input.mode,
+            from: previousInk,
+            to: resolved.edit.ink,
+            invariant: "Shadow color follows Ink while linked",
+          });
+        }
+      }
       break;
     }
     case "typography":
       replaceDeclarations(declarations.shared, TYPOGRAPHY_TOKENS, typographyDeclarations(edit));
       break;
-    case "rhythm":
+    case "rhythm": {
+      const rowLinked = edit.target === "sidebar-row" ? false : linksBefore.sidebarRow === "linked";
+      const linkedRowHeight = 20 + edit.density * 2;
+      committedEdit = rowLinked ? { ...edit, rowHeight: linkedRowHeight } : edit;
       replaceDeclarations(declarations.shared, RHYTHM_TOKENS, {
         spacing: px(edit.density),
         "tracking-normal": `${formatNumber(edit.tracking)}em`,
-        "bb-sidebar-row-height": px(edit.rowHeight),
-        "bb-sidebar-row-height-coarse": px(Math.max(40, edit.rowHeight + 12)),
+        "bb-sidebar-row-height": rowLinked ? LINKED_SIDEBAR_ROW : px(edit.rowHeight),
+        "bb-sidebar-row-height-coarse": rowLinked ? LINKED_SIDEBAR_ROW_COARSE : px(Math.max(40, edit.rowHeight + 12)),
         "icon-stroke-width": formatNumber(edit.iconStroke),
       });
+      if (edit.target === "density" && rowLinked && linkedRowHeight !== edit.rowHeight) {
+        adjustments.push({
+          control: "rhythm:row-height",
+          label: "Sidebar row",
+          scope: "shared",
+          from: px(edit.rowHeight),
+          to: px(linkedRowHeight),
+          invariant: "Sidebar row stays linked to 20px + 2 × Density",
+        });
+      }
       break;
+    }
     case "radius":
       replaceDeclarations(declarations.shared, RADIUS_TOKENS, { radius: px(edit.value) });
       break;
-    case "shadow":
+    case "shadow": {
+      const colorLinked = edit.target === "color" ? false : linksBefore.shadowColor[input.mode] === "linked";
       replaceDeclarations(declarations.shared, SHADOW_SHARED_TOKENS, {
         "shadow-x": px(edit.x),
         "shadow-y": px(edit.y),
         "shadow-blur": px(edit.blur),
         "shadow-spread": px(edit.spread),
       });
-      replaceDeclarations(target, SHADOW_MODE_TOKENS, shadowDeclarations(edit));
+      replaceDeclarations(target, SHADOW_MODE_TOKENS, shadowDeclarations(edit, colorLinked ? LINKED_SHADOW_COLOR : edit.color));
       break;
+    }
+    case "restore-link": {
+      if (edit.target === "sidebar-row") {
+        const previous = effectiveDeclaration(declarations, source, input.mode, "bb-sidebar-row-height") ?? "custom value";
+        declarations.shared.set("bb-sidebar-row-height", LINKED_SIDEBAR_ROW);
+        declarations.shared.set("bb-sidebar-row-height-coarse", LINKED_SIDEBAR_ROW_COARSE);
+        adjustments.push({
+          control: "rhythm:row-height",
+          label: "Sidebar row",
+          scope: "shared",
+          from: previous,
+          to: LINKED_SIDEBAR_ROW,
+          invariant: "Sidebar row follows Density",
+        });
+      } else {
+        const previous = effectiveDeclaration(declarations, source, input.mode, "tp-shadow-color")
+          ?? effectiveDeclaration(declarations, source, input.mode, "shadow-color")
+          ?? "custom value";
+        const shadowEdit: Extract<ThemeEditInput["edit"], { kind: "shadow" }> = {
+          kind: "shadow",
+          target: "color",
+          x: bounded(numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "shadow-x"), 0), -24, 24),
+          y: bounded(numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "shadow-y"), 2), -24, 24),
+          blur: bounded(numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "shadow-blur"), 0), 0, 48),
+          spread: bounded(numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "shadow-spread"), 0), -24, 24),
+          color: "#000000",
+          opacity: bounded(Math.round(
+            effectiveDeclaration(declarations, source, input.mode, "tp-shadow-opacity-percent") !== undefined
+              ? numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "tp-shadow-opacity-percent"), 16)
+              : numberDeclaration(effectiveDeclaration(declarations, source, input.mode, "shadow-opacity"), 0.16) * 100,
+          ), 0, 80),
+        };
+        replaceDeclarations(target, SHADOW_MODE_TOKENS, shadowDeclarations(shadowEdit, LINKED_SHADOW_COLOR));
+        adjustments.push({
+          control: "shadow:color",
+          label: "Shadow color",
+          scope: input.mode,
+          from: previous,
+          to: LINKED_SHADOW_COLOR,
+          invariant: "Shadow color follows Ink",
+        });
+      }
+      break;
+    }
   }
 
   const managed = renderManagedBlock(declarations);
@@ -692,7 +976,12 @@ export function applyThemeEdit(css: string, input: Pick<ThemeEditInput, "mode" |
   if (next.length > CUSTOM_THEME_CSS_MAX_LENGTH) {
     throw new Error(`Edited theme exceeds the ${CUSTOM_THEME_CSS_MAX_LENGTH}-character custom-theme limit`);
   }
-  return next;
+  return { css: next, committedEdit, adjustments, links: classifyThemeLinks(next) };
+}
+
+/** Compatibility helper for callers that only need the rewritten stylesheet. */
+export function applyThemeEdit(css: string, input: Pick<ThemeEditInput, "mode" | "edit">): string {
+  return applyThemeEditWithEffects(css, input).css;
 }
 
 async function writeFileAtomically(path: string, contents: string): Promise<void> {
@@ -786,20 +1075,29 @@ export function createThemeEditor<Catalog>(dependencies: ThemeEditorDependencies
         // A later edit makes the fork user-owned. Never leave an Undo action
         // capable of deleting work performed after the automatic copy.
         discardUndoForTheme(resource.id);
-        await writeFileAtomically(resource.filePath, applyThemeEdit(resource.css, input));
-        const catalog = await dependencies.applyTheme(resource.id);
-        return { catalog, themeId: resource.id, forkedFrom: null, undoToken: null };
+        const applied = applyThemeEditWithEffects(resource.css, input);
+        await writeFileAtomically(resource.filePath, applied.css);
+        const catalog = await dependencies.applyTheme(resource.id, resource.filePath);
+        return {
+          catalog,
+          themeId: resource.id,
+          forkedFrom: null,
+          undoToken: null,
+          committedEdit: applied.committedEdit,
+          adjustments: applied.adjustments,
+          links: applied.links,
+        };
       }
 
       // Validate and render before allocating the durable fork directory. A
       // rejected edit must not leave an empty custom-theme resource behind.
-      const editedCss = applyThemeEdit(resource.css, input);
+      const applied = applyThemeEditWithEffects(resource.css, input);
       const fork = await allocateForkDirectory(resource.themeDirectory, resource.name);
       const filePath = join(fork.directory, "theme.css");
-      const css = withForkName(editedCss, fork.name);
+      const css = withForkName(applied.css, fork.name);
       try {
         await writeFileAtomically(filePath, css);
-        const catalog = await dependencies.applyTheme(fork.id);
+        const catalog = await dependencies.applyTheme(fork.id, filePath);
         const undoToken = randomUUID();
         undoRecords.set(undoToken, {
           directory: fork.directory,
@@ -809,7 +1107,15 @@ export function createThemeEditor<Catalog>(dependencies: ThemeEditorDependencies
           forkedFrom: resource.id,
           themeId: fork.id,
         });
-        return { catalog, themeId: fork.id, forkedFrom: resource.id, undoToken };
+        return {
+          catalog,
+          themeId: fork.id,
+          forkedFrom: resource.id,
+          undoToken,
+          committedEdit: applied.committedEdit,
+          adjustments: applied.adjustments,
+          links: applied.links,
+        };
       } catch (error) {
         await rm(fork.directory, { recursive: true, force: true });
         throw error;

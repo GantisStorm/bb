@@ -22,6 +22,8 @@ vi.mock("sonner", () => ({
 }));
 
 type Catalog = Awaited<ReturnType<PluginRpcTestHandlers<typeof rpcContract>["themeCatalog"]>>;
+const LINKED = { sidebarRow: "linked", shadowColor: { light: "linked", dark: "linked" } } as const;
+const CUSTOM_LINKS = { sidebarRow: "custom", shadowColor: { light: "custom", dark: "linked" } } as const;
 
 const DEFAULT_CATALOG: Catalog = {
   activeThemeId: "default",
@@ -33,6 +35,7 @@ const DEFAULT_CATALOG: Catalog = {
       source: "builtin",
       light: null,
       dark: null,
+      links: LINKED,
     },
     {
       id: "plugin:endless:endless-color",
@@ -40,6 +43,7 @@ const DEFAULT_CATALOG: Catalog = {
       source: "plugin",
       light: null,
       dark: null,
+      links: LINKED,
     },
   ],
 };
@@ -49,12 +53,22 @@ const ENDLESS_CATALOG: Catalog = {
   activeThemeId: "plugin:endless:endless-color",
 };
 
+const LONG_THEME_NAME = "Endless Color copy with a deliberately descriptive name";
+const LONG_NAME_CATALOG: Catalog = {
+  activeThemeId: "long-theme",
+  revision: 0,
+  themes: [
+    ...DEFAULT_CATALOG.themes,
+    { id: "long-theme", name: LONG_THEME_NAME, source: "custom", light: null, dark: null, links: LINKED },
+  ],
+};
+
 const FORKED_CATALOG: Catalog = {
   activeThemeId: "default-copy",
   revision: 1,
   themes: [
     ...DEFAULT_CATALOG.themes,
-    { id: "default-copy", name: "Default copy", source: "custom", light: null, dark: null },
+    { id: "default-copy", name: "Default copy", source: "custom", light: null, dark: null, links: LINKED },
   ],
 };
 
@@ -107,6 +121,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   document.documentElement.classList.remove("dark");
+  localStorage.removeItem("bb.theme");
 });
 
 type TestRpc = Omit<PluginRpcTestHandlers<typeof rpcContract>, "editTheme" | "undoThemeFork"> &
@@ -114,7 +129,15 @@ type TestRpc = Omit<PluginRpcTestHandlers<typeof rpcContract>, "editTheme" | "un
 
 function withEditHandler(rpc: TestRpc): PluginRpcTestHandlers<typeof rpcContract> {
   return {
-    editTheme: ({ themeId }) => ({ catalog: DEFAULT_CATALOG, themeId, forkedFrom: null, undoToken: null }),
+    editTheme: ({ themeId, edit }) => ({
+      catalog: DEFAULT_CATALOG,
+      themeId,
+      forkedFrom: null,
+      undoToken: null,
+      committedEdit: edit,
+      adjustments: [],
+      links: LINKED,
+    }),
     undoThemeFork: () => DEFAULT_CATALOG,
     ...rpc,
   };
@@ -242,6 +265,79 @@ describe("Theme Preview", () => {
     expect(active?.textContent).toContain("Default");
   });
 
+  it("keeps short names intrinsic and truncates long names only at the available-width boundary", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
+    try {
+      const short = renderPreview({
+        themeCatalog: () => DEFAULT_CATALOG,
+        setTheme: () => DEFAULT_CATALOG,
+      });
+
+      await waitFor(() => expect(themeControl().textContent).toContain("Default"));
+      const shortControl = themeControl();
+      expect(shortControl.style.width).toBe("fit-content");
+      expect(shortControl.style.maxWidth).toBe("100%");
+      expect(shortControl.className).not.toContain("max-w-52");
+      expect(document.querySelector<HTMLElement>("[data-tp-theme-picker-row]")?.style.width).toBe("fit-content");
+      short.lifecycle.unmount();
+      cleanup();
+
+      width.mockReturnValue(360);
+      renderPreview({
+        themeCatalog: () => LONG_NAME_CATALOG,
+        setTheme: () => LONG_NAME_CATALOG,
+      });
+
+      await waitFor(() => expect(document.querySelector("[data-tp-band=mobile]")).not.toBeNull());
+      const longControl = await screen.findByRole("combobox", { name: new RegExp(LONG_THEME_NAME) });
+      const longName = document.querySelector<HTMLElement>("[data-tp-theme-name]");
+      expect(longName?.textContent).toBe(LONG_THEME_NAME);
+      expect(longName?.style.textOverflow).toBe("ellipsis");
+      expect(longName?.style.minWidth).toBe("0px");
+      expect(longControl.className).toContain("overflow-hidden");
+      expect(document.querySelector<HTMLElement>("[data-tp-theme-picker-row]")?.style.maxWidth).toBe("100%");
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("uses light and dark icons while preserving keyboard mode selection", async () => {
+    const selections: Array<{ themeId: string; mode: "light" | "dark" }> = [];
+    renderPreview({
+      themeCatalog: () => DEFAULT_CATALOG,
+      setTheme: (selection) => {
+        selections.push(selection);
+        return DEFAULT_CATALOG;
+      },
+    });
+
+    await screen.findByRole("combobox", { name: /Default light/i });
+    const light = screen.getByRole("button", { name: "Light mode" });
+    const dark = screen.getByRole("button", { name: "Dark mode" });
+    expect(light.querySelector('[data-tp-mode-icon="light"]')).not.toBeNull();
+    expect(dark.querySelector('[data-tp-mode-icon="dark"]')).not.toBeNull();
+    expect(light.getAttribute("aria-pressed")).toBe("true");
+    expect(dark.getAttribute("aria-pressed")).toBe("false");
+
+    dark.focus();
+    expect(document.activeElement).toBe(dark);
+    fireEvent.click(dark, { detail: 0 });
+    await waitFor(() => expect(selections).toEqual([{ themeId: "default", mode: "dark" }]));
+    expect(dark.getAttribute("aria-pressed")).toBe("true");
+    expect(light.getAttribute("aria-pressed")).toBe("false");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(localStorage.getItem("bb.theme")).toBe("dark");
+
+    light.focus();
+    fireEvent.click(light, { detail: 0 });
+    await waitFor(() => expect(selections).toEqual([
+      { themeId: "default", mode: "dark" },
+      { themeId: "default", mode: "light" },
+    ]));
+    expect(light.getAttribute("aria-pressed")).toBe("true");
+    expect(dark.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("restacks the main areas on mobile without a standalone derived-values inventory", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(480);
     try {
@@ -257,8 +353,8 @@ describe("Theme Preview", () => {
       expect(areas).toEqual(["mock", "overlays", "components", "stylesheet"]);
       expect(screen.queryByText("Derived values")).toBeNull();
       expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
-      expect(document.querySelector("[data-tp-derived=radius-ladder]")).not.toBeNull();
-      expect(document.querySelector("[data-tp-shadow-preview]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-derived=radius-ladder]")).toBeNull();
+      expect(document.querySelector("[data-tp-shadow-preview]")).toBeNull();
     } finally {
       width.mockRestore();
     }
@@ -278,8 +374,8 @@ describe("Theme Preview", () => {
         expect(screen.getByRole("tab", { name: view.label })).toBeDefined();
       }
       // Area 2: every style-sheet specimen is one discrete, targetable element.
-      expect(screen.queryByRole("button", { name: "Advanced geometry" })).toBeNull();
-      expect(document.querySelector("[data-tp-advanced-geometry]")).not.toBeNull();
+      expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
+      expect(document.querySelector("[data-tp-editor-tier=advanced]")).not.toBeNull();
       for (const specimenId of STYLESHEET_SPECIMEN_IDS) {
         expect(
           document.querySelectorAll(`[data-tp-specimen="${specimenId}"]`),
@@ -376,9 +472,18 @@ describe("Theme Preview", () => {
     expect(screen.getByRole("combobox", { name: /Saving Default/i }).className).toContain("disabled:opacity-100");
     expect(edits).toHaveLength(1);
 
-    await act(async () => pending.resolve({ catalog: FORKED_CATALOG, themeId: "default-copy", forkedFrom: "default", undoToken: "ec0ce536-87aa-49a8-908c-f0a4a99d3b40" }));
+    await act(async () => pending.resolve({
+      catalog: FORKED_CATALOG,
+      themeId: "default-copy",
+      forkedFrom: "default",
+      undoToken: "ec0ce536-87aa-49a8-908c-f0a4a99d3b40",
+      committedEdit: edits[0]!.edit,
+      adjustments: [],
+      links: LINKED,
+    }));
 
     expect(await screen.findByRole("combobox", { name: /Default copy/i })).toBeDefined();
+    expect(document.querySelector("[data-tp-save-feedback=saved]")?.textContent).toContain("Saved");
     const notice = await screen.findByRole("button", { name: "Theme copy created: Default copy. Press Enter or Space to undo" });
     notice.focus();
     expect(document.activeElement).toBe(notice);
@@ -398,11 +503,24 @@ describe("Theme Preview", () => {
     expect(document.querySelector("[data-tp-fork-status]")?.textContent).toContain("Removed Default copy. Restored Default.");
   });
 
-  it("restores the computed value when an edit fails", async () => {
+  it("rolls back only the failed control and retries the same edit inline", async () => {
+    const calls: Parameters<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>[0][] = [];
     renderPreview({
       themeCatalog: () => DEFAULT_CATALOG,
       setTheme: () => DEFAULT_CATALOG,
-      editTheme: () => { throw new Error("write failed"); },
+      editTheme: (input) => {
+        calls.push(input);
+        if (calls.length === 1) throw new Error("write failed");
+        return {
+          catalog: { ...DEFAULT_CATALOG, revision: 1 },
+          themeId: input.themeId,
+          forkedFrom: null,
+          undoToken: null,
+          committedEdit: input.edit,
+          adjustments: [],
+          links: LINKED,
+        };
+      },
     });
 
     const canvas = await waitFor(() => {
@@ -412,8 +530,108 @@ describe("Theme Preview", () => {
     });
     fireEvent.change(canvas, { target: { value: "#112233" } });
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Theme edit failed", { description: "write failed" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t save");
+    expect(screen.getByRole("alert").textContent).toContain("write failed");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+    expect(toast.error).not.toHaveBeenCalled();
     await waitFor(() => expect((screen.getByLabelText("Canvas color") as HTMLInputElement).value).toBe("#ffffff"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual(calls[0]);
+    await waitFor(() => expect((screen.getByLabelText("Canvas color") as HTMLInputElement).value).toBe("#112233"));
+    expect(document.querySelector("[data-tp-save-feedback=saved]")?.textContent).toContain("Saved");
+  });
+
+  it("shows authoritative projections and keeps their explanation available", async () => {
+    renderPreview({
+      themeCatalog: () => DEFAULT_CATALOG,
+      setTheme: () => DEFAULT_CATALOG,
+      editTheme: (input) => {
+        if (input.edit.kind !== "colors") throw new Error("Expected a color edit");
+        const committedEdit = { ...input.edit, primary: "#111111" };
+        return {
+          catalog: { ...DEFAULT_CATALOG, revision: 1 },
+          themeId: input.themeId,
+          forkedFrom: null,
+          undoToken: null,
+          committedEdit,
+          adjustments: [{
+            control: "color:primary",
+            label: "Primary",
+            scope: "light" as const,
+            from: input.edit.primary,
+            to: committedEdit.primary,
+            invariant: "Primary controls stays at 4.5:1 or better",
+          }],
+          links: LINKED,
+        };
+      },
+    });
+
+    const canvas = await waitFor(() => {
+      const input = screen.getByLabelText("Canvas color") as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      return input;
+    });
+    fireEvent.change(canvas, { target: { value: "#9fa2a8" } });
+
+    const details = await screen.findByRole("button", { name: "Saved with 1 automatic adjustment. Show details" });
+    expect((screen.getByLabelText("Canvas color") as HTMLInputElement).value).toBe("#9fa2a8");
+    expect((screen.getByLabelText("Primary color") as HTMLInputElement).value).toBe("#111111");
+    fireEvent.click(details);
+    const popover = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>("[data-tp-adjustment-details]");
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(popover.textContent).toContain("Primary");
+    expect(popover.textContent).toContain("#444444 → #111111");
+    expect(popover.textContent).toContain("4.5:1 or better");
+  });
+
+  it("restores durable Sidebar row and mode-specific Shadow color links", async () => {
+    let catalog: Catalog = {
+      ...DEFAULT_CATALOG,
+      themes: DEFAULT_CATALOG.themes.map((theme) => theme.id === "default" ? { ...theme, links: CUSTOM_LINKS } : theme),
+    };
+    const edits: Parameters<PluginRpcTestHandlers<typeof rpcContract>["editTheme"]>[0][] = [];
+    renderPreview({
+      themeCatalog: () => catalog,
+      setTheme: () => catalog,
+      editTheme: (input) => {
+        edits.push(input);
+        const links = input.edit.kind === "restore-link" && input.edit.target === "sidebar-row"
+          ? { ...CUSTOM_LINKS, sidebarRow: "linked" as const }
+          : { sidebarRow: "linked" as const, shadowColor: { light: "linked" as const, dark: "linked" as const } };
+        catalog = {
+          ...catalog,
+          revision: catalog.revision + 1,
+          themes: catalog.themes.map((theme) => theme.id === input.themeId ? { ...theme, links } : theme),
+        };
+        return {
+          catalog,
+          themeId: input.themeId,
+          forkedFrom: null,
+          undoToken: null,
+          committedEdit: input.edit,
+          adjustments: [],
+          links,
+        };
+      },
+    });
+
+    const rowReset = await screen.findByRole("button", { name: "Reset Sidebar row to Density" });
+    expect(edits).toHaveLength(0);
+    fireEvent.click(rowReset);
+    await waitFor(() => expect(edits).toHaveLength(1));
+    expect(edits[0]).toMatchObject({ mode: "light", edit: { kind: "restore-link", target: "sidebar-row" } });
+
+    const shadowReset = await screen.findByRole("button", { name: "Reset Shadow color to Ink" });
+    fireEvent.click(shadowReset);
+    await waitFor(() => expect(edits).toHaveLength(2));
+    expect(edits[1]).toMatchObject({ mode: "light", edit: { kind: "restore-link", target: "shadow-color" } });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Reset Shadow color to Ink" })).toBeNull());
   });
 
   it("composes the mock from natural panels instead of scaling a desktop window", async () => {
@@ -446,24 +664,18 @@ describe("Theme Preview", () => {
     }
   });
 
-  it("presents the shadow preview as a compact static sample", async () => {
+  it("removes generated-only style sheet samples", async () => {
     renderPreview({
       themeCatalog: () => DEFAULT_CATALOG,
       setTheme: () => DEFAULT_CATALOG,
     });
 
-    const preview = await waitFor(() => {
-      const found = document.querySelector<HTMLElement>("[data-tp-shadow-preview]");
-      expect(found).not.toBeNull();
-      return found as HTMLElement;
-    });
-    expect(preview.style.height).toBe("24px");
-    expect(preview.style.width).toBe("48px");
-    expect(preview.getAttribute("aria-label")).toBe("Live shadow sample");
-    const label = screen.getByText("Live shadow");
-    expect(label.nextElementSibling).toBe(preview);
-    expect(screen.queryByRole("button", { name: "Advanced geometry" })).toBeNull();
-    expect(document.querySelector("[data-tp-advanced-geometry]")).not.toBeNull();
+    await waitFor(() => expect(screen.getByText("Essentials")).toBeDefined());
+    expect(document.querySelector("[data-tp-shadow-preview]")).toBeNull();
+    expect(document.querySelector("[data-tp-derived=type-steps]")).toBeNull();
+    expect(document.querySelector("[data-tp-derived=row-previews]")).toBeNull();
+    expect(document.querySelector("[data-tp-derived=radius-ladder]")).toBeNull();
+    expect(document.querySelector("[data-tp-editor-tier=advanced]")).not.toBeNull();
   });
 
   it("includes the sidebar and info panel once the pane is wide enough", async () => {
@@ -565,11 +777,7 @@ describe("Theme Preview", () => {
       expect(shadowColor.closest("label")).toBeNull();
       expect(shadowColor.closest("[data-tp-specimen='shadow:color']")?.tagName).toBe("DIV");
 
-      const contrast = document.querySelector<HTMLElement>("[data-tp-base-contrast]");
-      expect(contrast?.style.background).toContain("--surface-recessed-soft-solid");
-      expect(contrast?.textContent).toContain("Theme safety");
-      expect(contrast?.textContent).toContain("Text accents");
-      expect(contrast?.textContent).toContain("Controls");
+      expect(document.querySelector("[data-tp-base-contrast]")).toBeNull();
 
       const components = document.querySelector<HTMLElement>("[data-tp-components]");
       expect(components?.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
@@ -582,8 +790,7 @@ describe("Theme Preview", () => {
         expect(block.querySelector<HTMLElement>("[data-tp-toggle-controls]")?.style.paddingInline).toBe("");
       }
 
-      const radiusPreview = document.querySelector<HTMLElement>("[data-tp-derived=radius-ladder] > span");
-      expect(radiusPreview?.style.height).toBe("32px");
+      expect(document.querySelector("[data-tp-derived=radius-ladder]")).toBeNull();
       expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
       expect(document.querySelector("[data-tp-shadow-ladder]")).toBeNull();
     } finally {
@@ -720,14 +927,15 @@ describe("Theme Preview", () => {
       const sheet = document.querySelector("[data-tp-area=stylesheet]");
       const blocks = [...(sheet?.querySelectorAll("[data-tp-block]") ?? [])].map((el) => el.getAttribute("data-tp-block"));
       expect(blocks.slice(0, 2)).toEqual(["colors", "systems"]);
-      expect(screen.getByText("Mode colors")).toBeDefined();
+      expect(screen.getByText("Essentials")).toBeDefined();
+      expect(screen.getByText("Advanced")).toBeDefined();
       expect(screen.queryByText("Foundation · surfaces")).toBeNull();
       expect(screen.queryByText("Derived values")).toBeNull();
       expect(document.querySelector("[data-tp-derived-values]")).toBeNull();
-      expect(document.querySelector("[data-tp-derived=type-steps]")).not.toBeNull();
-      expect(document.querySelector("[data-tp-derived=row-previews]")).not.toBeNull();
-      expect(document.querySelector("[data-tp-derived=radius-ladder]")).not.toBeNull();
-      expect(document.querySelector("[data-tp-shadow-preview]")).not.toBeNull();
+      expect(document.querySelector("[data-tp-derived=type-steps]")).toBeNull();
+      expect(document.querySelector("[data-tp-derived=row-previews]")).toBeNull();
+      expect(document.querySelector("[data-tp-derived=radius-ladder]")).toBeNull();
+      expect(document.querySelector("[data-tp-shadow-preview]")).toBeNull();
     } finally {
       width.mockRestore();
     }

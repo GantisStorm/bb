@@ -12,9 +12,9 @@
  * 3. `components` — live component specimens for hover, focus, pressed,
  *                   checked, editable, and disabled states. This stays a
  *                   compact sibling directly below overlays.
- * 4. `stylesheet` — the compact live theme editor. Direct values are real bb
- *                   controls (`data-tp-specimen`) with contextual previews
- *                   for the values they produce.
+ * 4. `stylesheet` — the compact live theme editor. Essential and advanced
+ *                   direct values are real bb controls (`data-tp-specimen`);
+ *                   the product fixture above is their visual evidence.
  *
  * The app renders sections from this manifest and the coverage test asserts
  * every inventoried specimen actually reaches the DOM, so adding a specimen
@@ -43,7 +43,7 @@ export const MOCK_VIEWS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Area 4 — Style sheet. Direct controls plus contextual previews.
+// Area 4 — Style sheet. Direct controls only; fixture evidence lives above.
 // `data-tp-specimen` values are `<kind>:<id>` from these tables.
 // ---------------------------------------------------------------------------
 
@@ -62,7 +62,7 @@ export const DIRECT_COLOR_CONTROLS = [
   { id: "pr-merged", label: "Merged", token: "pr-merged", family: "status" },
 ] as const;
 
-/** Typography controls and their live derived samples. */
+/** Typography controls. */
 export const TYPE_SPECIMENS = [
   { id: "font-sans", title: "Sans", token: "font-sans" },
   { id: "font-mono", title: "Mono", token: "font-mono" },
@@ -70,7 +70,7 @@ export const TYPE_SPECIMENS = [
   { id: "line-height", title: "Line height", token: "tp-line-height" },
 ] as const;
 
-/** Radius specimens: one direct base plus the derived ladder. */
+/** Radius tokens measured to seed the one direct base control. */
 export const RADIUS_SPECIMENS = [
   { id: "radius-sm", title: "Small", source: "var(--radius-sm)" },
   { id: "radius-md", title: "Medium", source: "var(--radius-md)" },

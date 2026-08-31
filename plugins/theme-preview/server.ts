@@ -5,12 +5,32 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { BUILTIN_THEME_CSS } from "./builtin-theme-sources";
 import {
+  classifyThemeLinks,
   createThemeEditor,
   editThemeInputSchema,
   readThemePreviewForkName,
+  themeEditSchema,
   undoThemeForkInputSchema,
   type EditableThemeResource,
 } from "./theme-editor";
+
+const themeLinksSchema = z
+  .object({
+    sidebarRow: z.enum(["linked", "custom"]),
+    shadowColor: z.object({ light: z.enum(["linked", "custom"]), dark: z.enum(["linked", "custom"]) }).strict(),
+  })
+  .strict();
+
+const editAdjustmentSchema = z
+  .object({
+    control: z.string().min(1),
+    label: z.string().min(1),
+    scope: z.enum(["shared", "light", "dark"]),
+    from: z.string(),
+    to: z.string(),
+    invariant: z.string().min(1),
+  })
+  .strict();
 
 const swatchSchema = z
   .object({
@@ -32,6 +52,7 @@ const themeSchema = z
     source: z.enum(["builtin", "custom", "plugin"]),
     light: swatchSchema.nullable(),
     dark: swatchSchema.nullable(),
+    links: themeLinksSchema,
   })
   .strict();
 
@@ -39,8 +60,8 @@ const catalogSchema = z
   .object({
     activeThemeId: z.string().nullable(),
     themes: z.array(themeSchema),
-    /** Bumps whenever the active theme's CSS changes on disk. */
-    revision: z.number(),
+    /** Monotonic version of applied theme CSS, including editor and watcher writes. */
+    revision: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -55,6 +76,9 @@ export const rpcContract = defineRpcContract({
         themeId: z.string().min(1),
         forkedFrom: z.string().nullable(),
         undoToken: z.string().uuid().nullable(),
+        committedEdit: themeEditSchema,
+        adjustments: z.array(editAdjustmentSchema),
+        links: themeLinksSchema,
       })
       .strict(),
   },
@@ -363,9 +387,10 @@ export async function buildCatalog(
   const themes = await Promise.all(
     entries.map(async (entry) => {
       const css = await readCss(entry.id);
+      const sourceCss = css ?? BUILTIN_THEME_CSS[entry.id] ?? "";
       const swatches = css ? parseThemeSwatches(css) : (BUILTIN_SWATCHES[entry.id] ?? { light: null, dark: null });
       const name = entry.source === "custom" && css ? (readThemePreviewForkName(css) ?? entry.name) : entry.name;
-      return { ...entry, name, light: swatches.light, dark: swatches.dark };
+      return { ...entry, name, light: swatches.light, dark: swatches.dark, links: classifyThemeLinks(sourceCss) };
     }),
   );
   return { activeThemeId, themes, revision: 0 };
@@ -599,8 +624,8 @@ export function createCatalogLoader(bb: BbPluginApi) {
             )) as { active?: { themeId?: unknown } };
             const currentThemeId = typeof current.active?.themeId === "string" ? current.active.themeId : null;
             if (selectionGeneration === selectionAtStart && currentThemeId === built.activeThemeId) {
-              revision += 1;
               await warnIfSlow(`theme re-apply (${built.activeThemeId})`, () => bb.sdk.theme.set(built.activeThemeId!));
+              revision += 1;
               bb.log.info(`theme-preview: ${built.activeThemeId} changed on disk — re-applied (rev ${revision})`);
             }
           }
@@ -625,7 +650,7 @@ export function createCatalogLoader(bb: BbPluginApi) {
     return promise;
   };
 
-  const setTheme = async (themeId: string, refreshCatalog: boolean) => {
+  const setTheme = async (themeId: string, refreshCatalog: boolean, editedFilePath?: string) => {
     selectionGeneration += 1;
     const generation = selectionGeneration;
     // Theme application is global and not cancellable. Preserve click order
@@ -635,6 +660,22 @@ export function createCatalogLoader(bb: BbPluginApi) {
     });
     selectionQueue = apply.catch(() => undefined);
     await apply;
+
+    if (editedFilePath !== undefined) {
+      // The editor has already committed this file atomically. Own the state
+      // transition here, then remember its exact stamp before enrichment so
+      // the filesystem watcher echo cannot count the same write twice.
+      revision += 1;
+      try {
+        const info = await stat(editedFilePath);
+        stamps.set(editedFilePath, `${editedFilePath}:${info.mtimeMs}:${info.size}`);
+      } catch (error) {
+        // The successful edit still owns one revision. With no baseline, the
+        // next watcher pass observes (rather than reapplies) this file.
+        stamps.delete(editedFilePath);
+        bb.log.warn(`theme-preview: could not record edited theme stamp: ${String(error)}`);
+      }
+    }
 
     if (refreshCatalog) return catalog();
 
@@ -653,11 +694,11 @@ export function createCatalogLoader(bb: BbPluginApi) {
     setTheme(themeId: string) {
       return setTheme(themeId, false);
     },
-    applyEditedTheme(themeId: string) {
+    applyEditedTheme(themeId: string, filePath: string) {
       // Editing can introduce a newly forked catalog entry and always changes
       // swatches, so return a fresh enrichment rather than the picker's prior
       // snapshot.
-      return setTheme(themeId, true);
+      return setTheme(themeId, true, filePath);
     },
   };
 }
@@ -674,7 +715,7 @@ export default async function plugin(bb: BbPluginApi) {
   const catalog = catalogLoader.catalog;
   const themeEditor = createThemeEditor({
     resolveTheme: (themeId) => resolveEditableTheme(bb, themeId),
-    applyTheme: (themeId) => catalogLoader.applyEditedTheme(themeId),
+    applyTheme: (themeId, filePath) => catalogLoader.applyEditedTheme(themeId, filePath),
     selectTheme: async (themeId) => { await catalogLoader.setTheme(themeId); },
     loadCatalog: () => catalogLoader.catalog(),
   });

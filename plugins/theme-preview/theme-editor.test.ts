@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   applyThemeEdit,
+  applyThemeEditWithEffects,
+  classifyThemeLinks,
   createThemeEditor,
   editThemeInputSchema,
   readThemePreviewForkName,
@@ -30,14 +32,34 @@ const colors = (target: Extract<ThemeEditInput["edit"], { kind: "colors" }>["tar
   prMerged: "#6040a8",
 });
 
+function hexDeclaration(css: string, token: string): string {
+  const values = [...css.matchAll(new RegExp(`--${token}: (#[0-9a-f]{6}(?:[0-9a-f]{2})?);`, "gi"))];
+  const value = values[values.length - 1]?.[1];
+  if (!value) throw new Error(`Missing --${token} hex declaration`);
+  return value;
+}
+
+function contrast(first: string, second: string): number {
+  const luminance = (hex: string) => {
+    const channels = [1, 3, 5]
+      .map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255)
+      .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+  };
+  const firstLuminance = luminance(first);
+  const secondLuminance = luminance(second);
+  return (Math.max(firstLuminance, secondLuminance) + 0.05) / (Math.min(firstLuminance, secondLuminance) + 0.05);
+}
+
 describe("editThemeInputSchema", () => {
   it("accepts every deterministic edit family at its approved boundaries", () => {
     const inputs: ThemeEditInput[] = [
       { themeId: "nord", mode: "light", edit: colors("canvas") },
-      { themeId: "nord", mode: "dark", edit: { kind: "typography", fontSans: "system-ui, sans-serif", fontMono: "ui-monospace, monospace", textScale: 0.9, lineHeight: 1.15 } },
-      { themeId: "nord", mode: "light", edit: { kind: "rhythm", density: 5, tracking: -0.04, rowHeight: 40, iconStroke: 2.5 } },
-      { themeId: "nord", mode: "light", edit: { kind: "radius", value: 0 } },
-      { themeId: "nord", mode: "dark", edit: { kind: "shadow", x: -24, y: 24, blur: 48, spread: -24, color: "#000000", opacity: 80 } },
+      { themeId: "nord", mode: "dark", edit: { kind: "typography", target: "font-sans", fontSans: "system-ui, sans-serif", fontMono: "ui-monospace, monospace", textScale: 0.9, lineHeight: 1.15 } },
+      { themeId: "nord", mode: "light", edit: { kind: "rhythm", target: "density", density: 5, tracking: -0.04, rowHeight: 40, iconStroke: 2.5 } },
+      { themeId: "nord", mode: "light", edit: { kind: "radius", target: "base", value: 0 } },
+      { themeId: "nord", mode: "dark", edit: { kind: "shadow", target: "color", x: -24, y: 24, blur: 48, spread: -24, color: "#000000", opacity: 80 } },
+      { themeId: "nord", mode: "dark", edit: { kind: "restore-link", target: "shadow-color" } },
     ];
     for (const input of inputs) expect(editThemeInputSchema.safeParse(input).success).toBe(true);
   });
@@ -53,16 +75,21 @@ describe("editThemeInputSchema", () => {
     expect(editThemeInputSchema.safeParse({
       themeId: "nord",
       mode: "light",
-      edit: { kind: "rhythm", density: 5.01, tracking: 0, rowHeight: 28, iconStroke: 1.75 },
+      edit: { kind: "rhythm", target: "density", density: 5.01, tracking: 0, rowHeight: 28, iconStroke: 1.75 },
     }).success).toBe(false);
     expect(editThemeInputSchema.safeParse({
       themeId: "nord",
       mode: "light",
-      edit: { kind: "typography", fontSans: "system-ui; color:red", fontMono: "monospace", textScale: 1, lineHeight: 1 },
+      edit: { kind: "typography", target: "font-sans", fontSans: "system-ui; color:red", fontMono: "monospace", textScale: 1, lineHeight: 1 },
+    }).success).toBe(false);
+    expect(editThemeInputSchema.safeParse({
+      themeId: "nord",
+      mode: "light",
+      edit: { kind: "radius", value: 8 },
     }).success).toBe(false);
   });
 
-  it("rejects a canvas that passes base contrast but strands the rest of the palette", () => {
+  it("accepts relationally unsafe colors at the boundary so the editor can derive a valid palette", () => {
     const edit = {
       kind: "colors" as const,
       target: "canvas" as const,
@@ -79,28 +106,7 @@ describe("editThemeInputSchema", () => {
       prMerged: "#55608c",
     };
 
-    // The RPC shape is valid; the editor rejects the unsafe relationship with
-    // a specific message that survives through the handler to the user.
     expect(editThemeInputSchema.safeParse({ themeId: "endless-color-copy", mode: "light", edit }).success).toBe(true);
-    expect(() => applyThemeEdit("/* untouched */", { mode: "light", edit }))
-      .toThrow("Keep text at 4.5:1 and controls at 3.0:1 or better");
-  });
-
-  it.each([
-    ["ink", { ink: "#eeeeee" }],
-    ["sidebar", { sidebar: "#222222", sidebarForeground: "#333333" }],
-    ["sidebar-foreground", { sidebar: "#222222", sidebarForeground: "#333333" }],
-    ["primary", { primary: "#bbbbbb" }],
-    ["timeline-accent", { timelineAccent: "#bbbbbb" }],
-    ["success", { success: "#bbbbbb" }],
-    ["warning", { warning: "#bbbbbb" }],
-    ["attention", { attention: "#bbbbbb" }],
-    ["destructive", { destructive: "#bbbbbb" }],
-    ["pr-merged", { prMerged: "#bbbbbb" }],
-  ] as const)("rejects an unsafe %s edit before writing CSS", (target, override) => {
-    const edit = { ...colors(target), ...override };
-    expect(editThemeInputSchema.safeParse({ themeId: "copy", mode: "light", edit }).success).toBe(true);
-    expect(() => applyThemeEdit("", { mode: "light", edit })).toThrow(/would be|Canvas \/ ink/);
   });
 });
 
@@ -144,19 +150,125 @@ describe("applyThemeEdit", () => {
     expect(second.match(/theme-preview:managed:start/g)).toHaveLength(1);
   });
 
+  it("keeps a valid direct color exact and does not take ownership of unrelated families", () => {
+    const css = applyThemeEdit("", {
+      mode: "light",
+      edit: { ...colors("primary"), primary: "#1122aa" },
+    });
+    expect(hexDeclaration(css, "primary")).toBe("#1122aa");
+    expect(css).not.toContain("--canvas:");
+    expect(css).not.toContain("--success:");
+  });
+
+  it("preserves a canvas edit and derives every affected dependent color", () => {
+    const edit = {
+      kind: "colors" as const,
+      target: "canvas" as const,
+      canvas: "#9fa2a8",
+      ink: "#0a0a0a",
+      sidebar: "#e3e5e9",
+      sidebarForeground: "#0a0a0a",
+      primary: "#2e6f95",
+      timelineAccent: "#2e6f95",
+      success: "#5a6813",
+      warning: "#8a660a",
+      attention: "#a8481f",
+      destructive: "#9c3118",
+      prMerged: "#55608c",
+    };
+    const css = applyThemeEdit("/* untouched */", { mode: "light", edit });
+    const canvas = hexDeclaration(css, "canvas");
+
+    expect(canvas).toBe(edit.canvas);
+    expect(hexDeclaration(css, "ink")).toBe(edit.ink);
+    for (const [token, requested] of [
+      ["primary", edit.primary],
+      ["timeline-accent", edit.timelineAccent],
+      ["success", edit.success],
+      ["warning", edit.warning],
+      ["destructive", edit.destructive],
+      ["pr-merged", edit.prMerged],
+    ] as const) {
+      const value = hexDeclaration(css, token);
+      expect(value).not.toBe(requested);
+      expect(contrast(value, canvas)).toBeGreaterThanOrEqual(4.5);
+    }
+    const attention = hexDeclaration(css, "attention");
+    expect(attention).not.toBe(edit.attention);
+    expect(contrast(attention, canvas)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("repairs an invalid direct relationship instead of rejecting the edit", () => {
+    const edit = { ...colors("primary"), primary: "#bbbbbb" };
+    const css = applyThemeEdit("", { mode: "light", edit });
+    const primary = hexDeclaration(css, "primary");
+
+    expect(primary).not.toBe(edit.primary);
+    expect(contrast(primary, edit.canvas)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("returns ordered authoritative projection metadata", () => {
+    const edit = {
+      ...colors("canvas"),
+      canvas: "#9fa2a8",
+      primary: "#2e6f95",
+      timelineAccent: "#2e6f95",
+      success: "#5a6813",
+      warning: "#8a660a",
+      attention: "#a8481f",
+      destructive: "#9c3118",
+      prMerged: "#55608c",
+    };
+    const result = applyThemeEditWithEffects("", { mode: "light", edit });
+
+    expect(result.committedEdit).toMatchObject({ kind: "colors", target: "canvas", canvas: edit.canvas });
+    expect(result.adjustments.map(({ control }) => control)).toEqual([
+      "color:primary",
+      "color:timeline-accent",
+      "color:success",
+      "color:warning",
+      "color:attention",
+      "color:destructive",
+      "color:pr-merged",
+    ]);
+    expect(result.adjustments[0]).toEqual(expect.objectContaining({
+      label: "Primary",
+      scope: "light",
+      from: edit.primary,
+      invariant: "Primary controls stays at 4.5:1 or better",
+    }));
+  });
+
+  it("cascades a dark ink edit through its destructive-color dependency", () => {
+    const edit = {
+      ...colors("ink"),
+      canvas: "#17191c",
+      ink: "#333333",
+      destructive: "#777777",
+    };
+    const css = applyThemeEdit("", { mode: "dark", edit });
+    const ink = hexDeclaration(css, "ink");
+    const destructive = hexDeclaration(css, "destructive");
+
+    expect(ink).not.toBe(edit.ink);
+    expect(contrast(ink, edit.canvas)).toBeGreaterThanOrEqual(4.5);
+    expect(destructive).not.toBe(edit.destructive);
+    expect(contrast(destructive, ink)).toBeGreaterThanOrEqual(4.5);
+  });
+
   it("derives typography, rhythm, touch rows, radius, and the complete shadow ladder", () => {
     let css = applyThemeEdit("", {
       mode: "light",
-      edit: { kind: "typography", fontSans: "system-ui, sans-serif", fontMono: "ui-monospace, monospace", textScale: 1.1, lineHeight: 0.9 },
+      edit: { kind: "typography", target: "text-scale", fontSans: "system-ui, sans-serif", fontMono: "ui-monospace, monospace", textScale: 1.1, lineHeight: 0.9 },
     });
     css = applyThemeEdit(css, {
       mode: "light",
-      edit: { kind: "rhythm", density: 3.5, tracking: 0.02, rowHeight: 30, iconStroke: 2 },
+      edit: { kind: "rhythm", target: "sidebar-row", density: 3.5, tracking: 0.02, rowHeight: 30, iconStroke: 2 },
     });
-    css = applyThemeEdit(css, { mode: "light", edit: { kind: "radius", value: 12 } });
+    css = applyThemeEdit(css, { mode: "light", edit: { kind: "radius", target: "base", value: 12 } });
     css = applyThemeEdit(css, {
       mode: "dark",
-      edit: { kind: "shadow", x: -2, y: 3, blur: 4, spread: -1, color: "#112233", opacity: 40 },
+      edit: { kind: "shadow", target: "color", x: -2, y: 3, blur: 4, spread: -1, color: "#112233", opacity: 40 },
     });
 
     expect(css).toContain("--tp-text-scale: 1.1;");
@@ -177,10 +289,100 @@ describe("applyThemeEdit", () => {
   it("clamps derived shadow alpha at the maximum supported opacity", () => {
     const css = applyThemeEdit("", {
       mode: "dark",
-      edit: { kind: "shadow", x: 0, y: 2, blur: 0, spread: 0, color: "#000000", opacity: 80 },
+      edit: { kind: "shadow", target: "color", x: 0, y: 2, blur: 0, spread: 0, color: "#000000", opacity: 80 },
     });
-    expect(css).toContain("--shadow-2xl: 0px 12px 24px -4px color-mix(in oklab, #000000 100%, transparent);");
+    expect(css).toContain("--shadow-2xl: 0px 12px 24px -4px color-mix(in oklab, var(--tp-shadow-color) 100%, transparent);");
     expect(css).not.toContain("112%");
+  });
+
+  it("persists Sidebar row as linked until edited and restores the canonical formula", () => {
+    const density = applyThemeEditWithEffects("", {
+      mode: "light",
+      edit: { kind: "rhythm", target: "density", density: 5, tracking: 0, rowHeight: 28, iconStroke: 1.75 },
+    });
+    expect(density.css).toContain("--bb-sidebar-row-height: calc(20px + var(--spacing) + var(--spacing));");
+    expect(density.committedEdit).toMatchObject({ kind: "rhythm", rowHeight: 30 });
+    expect(density.adjustments).toEqual([expect.objectContaining({ control: "rhythm:row-height", from: "28px", to: "30px" })]);
+    expect(density.links.sidebarRow).toBe("linked");
+
+    const custom = applyThemeEditWithEffects(density.css, {
+      mode: "light",
+      edit: { kind: "rhythm", target: "sidebar-row", density: 5, tracking: 0, rowHeight: 34, iconStroke: 1.75 },
+    });
+    expect(custom.css).toContain("--bb-sidebar-row-height: 34px;");
+    expect(custom.links.sidebarRow).toBe("custom");
+
+    const laterDensity = applyThemeEditWithEffects(custom.css, {
+      mode: "light",
+      edit: { kind: "rhythm", target: "density", density: 3, tracking: 0, rowHeight: 34, iconStroke: 1.75 },
+    });
+    expect(laterDensity.css).toContain("--bb-sidebar-row-height: 34px;");
+    expect(laterDensity.adjustments).toEqual([]);
+
+    const reset = applyThemeEditWithEffects(laterDensity.css, {
+      mode: "light",
+      edit: { kind: "restore-link", target: "sidebar-row" },
+    });
+    expect(reset.links.sidebarRow).toBe("linked");
+    expect(reset.css).toContain("--bb-sidebar-row-height-coarse: max(40px, calc(var(--bb-sidebar-row-height) + 12px));");
+  });
+
+  it("persists each mode's Shadow color link independently and restores it", () => {
+    const base = applyThemeEdit("", { mode: "light", edit: colors("canvas") });
+    const linked = applyThemeEditWithEffects(base, {
+      mode: "light",
+      edit: { kind: "shadow", target: "y", x: 0, y: 4, blur: 8, spread: 0, color: "#1a1a1a", opacity: 16 },
+    });
+    expect(linked.css).toContain("--tp-shadow-color: var(--ink);");
+    expect(linked.css).toContain("color-mix(in oklab, var(--tp-shadow-color)");
+    expect(linked.links.shadowColor).toEqual({ light: "linked", dark: "linked" });
+
+    const custom = applyThemeEditWithEffects(linked.css, {
+      mode: "light",
+      edit: { kind: "shadow", target: "color", x: 0, y: 4, blur: 8, spread: 0, color: "#123456", opacity: 16 },
+    });
+    expect(custom.links.shadowColor).toEqual({ light: "custom", dark: "linked" });
+    expect(custom.css).toContain("--tp-shadow-color: #123456;");
+
+    const reset = applyThemeEditWithEffects(custom.css, {
+      mode: "light",
+      edit: { kind: "restore-link", target: "shadow-color" },
+    });
+    expect(reset.links.shadowColor).toEqual({ light: "linked", dark: "linked" });
+    expect(reset.adjustments).toEqual([expect.objectContaining({ control: "shadow:color", to: "var(--ink)" })]);
+
+    const changedInk = applyThemeEditWithEffects(reset.css, {
+      mode: "light",
+      edit: { ...colors("ink"), ink: "#202020" },
+    });
+    expect(changedInk.adjustments).toContainEqual(expect.objectContaining({
+      control: "shadow:color",
+      to: "#202020",
+      invariant: "Shadow color follows Ink while linked",
+    }));
+  });
+
+  it("classifies source declarations as custom and absent relationships as linked", () => {
+    expect(classifyThemeLinks(":root { --bb-sidebar-row-height: 31px; --shadow-color: #222222; }"))
+      .toEqual({ sidebarRow: "custom", shadowColor: { light: "custom", dark: "custom" } });
+    expect(classifyThemeLinks(".dark { --bb-sidebar-row-height: 30px; }"))
+      .toEqual({ sidebarRow: "custom", shadowColor: { light: "linked", dark: "linked" } });
+    expect(classifyThemeLinks(":root { --canvas: #ffffff; }"))
+      .toEqual({ sidebarRow: "linked", shadowColor: { light: "linked", dark: "linked" } });
+    expect(classifyThemeLinks(`${THEME_PREVIEW_MANAGED_MARKERS.start}\n:root { --bb-sidebar-row-height: calc( 20px + var(--spacing) + var(--spacing) ); }\n.dark { --tp-shadow-color: var( --ink ); }\n${THEME_PREVIEW_MANAGED_MARKERS.end}`))
+      .toEqual({ sidebarRow: "linked", shadowColor: { light: "linked", dark: "linked" } });
+  });
+
+  it("resets a source-defined relationship by override without rewriting source CSS", () => {
+    const source = ":root { --bb-sidebar-row-height: 31px; }\n.user-rule { color: hotpink; }\n";
+    const reset = applyThemeEditWithEffects(source, {
+      mode: "light",
+      edit: { kind: "restore-link", target: "sidebar-row" },
+    });
+
+    expect(reset.css.startsWith(source)).toBe(true);
+    expect(reset.css).toContain("--bb-sidebar-row-height: calc(20px + var(--spacing) + var(--spacing));");
+    expect(reset.links.sidebarRow).toBe("linked");
   });
 
   it("refuses malformed or duplicate managed markers instead of overwriting user CSS", () => {
@@ -215,8 +417,10 @@ describe("createThemeEditor", () => {
       const written = await readFile(filePath, "utf8");
       expect(written.startsWith(source)).toBe(true);
       expect(written).toContain("--timeline-accent: #1f5f99;");
-      expect(result).toEqual({ catalog: { activeThemeId: "handmade" }, themeId: "handmade", forkedFrom: null, undoToken: null });
-      expect(applyTheme).toHaveBeenCalledWith("handmade");
+      expect(result).toMatchObject({ catalog: { activeThemeId: "handmade" }, themeId: "handmade", forkedFrom: null, undoToken: null });
+      expect(result.committedEdit).toEqual(colors("timeline-accent"));
+      expect(result.adjustments).toEqual([]);
+      expect(applyTheme).toHaveBeenCalledWith("handmade", filePath);
     } finally {
       await rm(themeDirectory, { recursive: true, force: true });
     }
@@ -252,8 +456,11 @@ describe("createThemeEditor", () => {
         themeId: expectedId,
         forkedFrom: id,
         undoToken: expect.any(String),
+        committedEdit: colors("success"),
+        adjustments: [],
+        links: expect.any(Object),
       });
-      expect(applyTheme).toHaveBeenCalledWith(expectedId);
+      expect(applyTheme).toHaveBeenCalledWith(expectedId, join(themeDirectory, expectedId, "theme.css"));
 
       await expect(editor.undoThemeFork({ undoToken: result.undoToken! })).resolves.toEqual({ activeThemeId: id });
       await expect(readFile(join(themeDirectory, expectedId, "theme.css"), "utf8")).rejects.toThrow();
@@ -264,8 +471,8 @@ describe("createThemeEditor", () => {
     }
   });
 
-  it("rejects an unsafe built-in edit before allocating its durable copy", async () => {
-    const themeDirectory = await mkdtemp(join(tmpdir(), "theme-preview-rejected-fork-"));
+  it("derives an unsafe built-in edit before allocating its durable copy", async () => {
+    const themeDirectory = await mkdtemp(join(tmpdir(), "theme-preview-derived-fork-"));
     const editor = createThemeEditor({
       resolveTheme: async (): Promise<EditableThemeResource> => ({
         id: "default", name: "Default", source: "builtin", css: ":root { --canvas: #f4f4f4; }", filePath: null, themeDirectory,
@@ -276,12 +483,17 @@ describe("createThemeEditor", () => {
     });
 
     try {
-      await expect(editor.editTheme({
+      const result = await editor.editTheme({
         themeId: "default",
         mode: "light",
         edit: { ...colors("canvas"), canvas: "#9fa2a8" },
-      })).rejects.toThrow("Keep text at 4.5:1 and controls at 3.0:1 or better");
-      expect(await readdir(themeDirectory)).toEqual([]);
+      });
+      const entries = await readdir(themeDirectory);
+      expect(entries).toEqual([result.themeId]);
+      const css = await readFile(join(themeDirectory, result.themeId, "theme.css"), "utf8");
+      expect(hexDeclaration(css, "canvas")).toBe("#9fa2a8");
+      expect(contrast(hexDeclaration(css, "primary"), "#9fa2a8")).toBeGreaterThanOrEqual(4.5);
+      expect(result.forkedFrom).toBe("default");
     } finally {
       await rm(themeDirectory, { recursive: true, force: true });
     }
