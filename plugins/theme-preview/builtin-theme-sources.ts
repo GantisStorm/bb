@@ -1,7 +1,7 @@
 /**
  * Plugin-owned snapshots of bb's built-in palette overrides. A fork starts
  * from this complete source CSS, then appends Theme Preview's managed block.
- * Keep these snapshots aligned semantically with apps/app/src/lib/themes/*.ts;
+ * Keep these snapshots aligned semantically with packages/domain/src/app-theme-css/*.ts;
  * builtin-theme-sources.test.ts ignores comments and formatting so that check
  * only speaks up when the declarations themselves change.
  */
