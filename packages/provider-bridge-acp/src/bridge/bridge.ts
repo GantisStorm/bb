@@ -94,7 +94,6 @@ import {
   acpSessionNewResultSchema,
   acpSessionNotificationParamsSchema,
   acpUsageUpdateSchema,
-  type AcpConfigStateResult,
   type AcpSessionModels,
   type AcpUsageUpdate,
   acpStopReasonSchema,
@@ -1118,11 +1117,8 @@ async function selectAcpNativeModel(args: {
       sessionModelsIncludeSelection &&
       args.models?.currentModelId !== selection.modelId);
   if (shouldSetModel) {
-    let configState: AcpConfigStateResult | null = null;
-    let setModel = true;
-    if (modelOption) {
-      try {
-        configState = await args.connection.request({
+    const configState = modelOption
+      ? await args.connection.request({
           method: "session/set_config_option",
           params: {
             sessionId: args.sessionId,
@@ -1130,19 +1126,12 @@ async function selectAcpNativeModel(args: {
             value: selection.modelId,
           },
           resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
+        })
+      : await args.connection.request({
+          method: "session/set_model",
+          params: { sessionId: args.sessionId, modelId: selection.modelId },
+          resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
         });
-        setModel = false;
-      } catch {
-        setModel = true;
-      }
-    }
-    if (setModel) {
-      configState = await args.connection.request({
-        method: "session/set_model",
-        params: { sessionId: args.sessionId, modelId: selection.modelId },
-        resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
-      });
-    }
     configOptions = configState?.configOptions ?? configOptions;
   }
   await selectAcpNativeReasoning({
