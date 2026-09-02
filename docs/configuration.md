@@ -94,8 +94,9 @@ you need a live change.
 `BB_LOG_LEVEL` is the startup-only `bb-app config` key. The complete current
 set of startup-only server or launcher env entries is:
 
-- `BB_APP_SURFACE`, `BB_APP_URL`, `BB_DATA_DIR`, and `BB_DEV_APP_PORT`
-- `BB_EXTERNAL_URL`, `BB_HOST_DAEMON_PORT`, `BB_INFERENCE`,
+- `BB_APP_SURFACE`, `BB_APP_URL`, `BB_DATA_DIR`, `BB_DEV_APP_PORT`, and
+  `BB_EXTERNAL_URL`
+- `BB_HOST_DAEMON_PORT`, `BB_INFERENCE`,
   `BB_INFERENCE_FALLBACK`, and `BB_INHERITED_SKILLS_ROOTS`
 - `BB_LOG_LEVEL`, `BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD`,
   `BB_MARKETPLACE_URL`, `BB_POSTHOG_API_KEY`, and `BB_TELEMETRY`
@@ -163,6 +164,11 @@ The microphone picker in Settings → Voice Input is client-local. It stores the
 selected browser `MediaDevices` device id in localStorage as
 `bb.voiceInput.audioInputDeviceId`; it does not change `bb-app config` or the
 server-side transcription model.
+
+The built-in Push notifications plugin uses `expoPushUrl` for its relay URL.
+The default is `https://exp.host/--/api/v2/push/send`. Change it with
+`bb plugin config push-notifications set expoPushUrl <url>`. The plugin reads
+the value when it sends a message.
 
 The builtin Keep Awake plugin has one autosaving configuration page with an
 enable switch and an all-or-selected host picker. On selected macOS hosts it
