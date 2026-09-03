@@ -32,6 +32,10 @@
  *                              advertising a thought_level config option
  * - FAKE_ACP_SET_CONFIG_MODEL_ERROR=1
  *                            → fail session/set_config_option for model values
+ * - FAKE_ACP_SET_CONFIG_MODEL_ERROR_ONCE=1
+ *                            → fail the first model config update only
+ * - FAKE_ACP_SET_CONFIG_MODEL_ERROR_COUNT=<n>
+ *                            → fail the first n model config updates
  * - FAKE_ACP_SET_CONFIG_FAST_ERROR=1
  *                            → fail session/set_config_option for Fast values
  * - FAKE_ACP_CURSOR_PARAMETERIZED_MODELS=1
@@ -84,6 +88,12 @@ const unmappedReasoningConfig =
 const acceptNativeReasoning =
   process.env.FAKE_ACP_ACCEPT_NATIVE_REASONING === "1";
 const setConfigModelError = process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR === "1";
+const setConfigModelErrorOnce =
+  process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR_ONCE === "1";
+const setConfigModelErrorCount = Math.max(
+  0,
+  Number(process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR_COUNT ?? "0"),
+);
 const setConfigFastError = process.env.FAKE_ACP_SET_CONFIG_FAST_ERROR === "1";
 const cursorParameterizedModels =
   process.env.FAKE_ACP_CURSOR_PARAMETERIZED_MODELS === "1";
@@ -102,6 +112,8 @@ const sessionNewDelayMs = Number(
 const updatesWithSessionResponse =
   process.env.FAKE_ACP_UPDATES_WITH_SESSION_RESPONSE === "1";
 const ignoreCancel = process.env.FAKE_ACP_IGNORE_CANCEL === "1";
+let remainingSetConfigModelErrors =
+  setConfigModelErrorOnce ? 1 : setConfigModelErrorCount;
 // `--list-models` is the agent's own model-list mode: the bridge derives its
 // list command from the launch spec's agent binary plus `modelCli.listArgs`,
 // so a list command can only ever be this binary.
@@ -740,6 +752,15 @@ async function handleMessage(message) {
             jsonrpc: "2.0",
             id: message.id,
             error: { code: -32603, message: "model config probe failed" },
+          });
+          return;
+        }
+        if (remainingSetConfigModelErrors > 0) {
+          remainingSetConfigModelErrors -= 1;
+          send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32603, message: `Unknown ACP model: ${value}` },
           });
           return;
         }

@@ -1093,6 +1093,56 @@ async function resolveAgentLaunchArgs(
   };
 }
 
+const ACP_MODEL_SELECTION_RETRY_DELAY_MS = 250;
+const ACP_MODEL_SELECTION_MAX_ATTEMPTS = 120;
+
+function isAcpUnknownModelError(error: unknown, modelId: string): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes(`Unknown ACP model: ${modelId}`)
+  );
+}
+function waitForAcpModelRegistration(): Promise<void> {
+  return new Promise<void>((resolveDelay) => {
+    setTimeout(resolveDelay, ACP_MODEL_SELECTION_RETRY_DELAY_MS);
+  });
+}
+
+async function setAcpNativeModel(args: {
+  connection: AcpAgentConnection;
+  sessionId: string;
+  modelId: string;
+  configId?: string;
+}): Promise<z.infer<typeof acpConfigStateResultSchema> | null> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return args.configId === undefined
+        ? await args.connection.request({
+            method: "session/set_model",
+            params: { sessionId: args.sessionId, modelId: args.modelId },
+            resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
+          })
+        : await args.connection.request({
+            method: "session/set_config_option",
+            params: {
+              sessionId: args.sessionId,
+              configId: args.configId,
+              value: args.modelId,
+            },
+            resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
+          });
+    } catch (error) {
+      if (
+        attempt === ACP_MODEL_SELECTION_MAX_ATTEMPTS ||
+        !isAcpUnknownModelError(error, args.modelId)
+      ) {
+        throw error;
+      }
+      await waitForAcpModelRegistration();
+    }
+  }
+}
+
 async function selectAcpNativeModel(args: {
   connection: AcpAgentConnection;
   sessionId: string;
@@ -1117,21 +1167,12 @@ async function selectAcpNativeModel(args: {
       sessionModelsIncludeSelection &&
       args.models?.currentModelId !== selection.modelId);
   if (shouldSetModel) {
-    const configState = modelOption
-      ? await args.connection.request({
-          method: "session/set_config_option",
-          params: {
-            sessionId: args.sessionId,
-            configId: modelOption.id,
-            value: selection.modelId,
-          },
-          resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
-        })
-      : await args.connection.request({
-          method: "session/set_model",
-          params: { sessionId: args.sessionId, modelId: selection.modelId },
-          resultSchema: z.union([acpConfigStateResultSchema, z.null()]),
-        });
+    const configState = await setAcpNativeModel({
+      connection: args.connection,
+      sessionId: args.sessionId,
+      modelId: selection.modelId,
+      ...(modelOption === undefined ? {} : { configId: modelOption.id }),
+    });
     configOptions = configState?.configOptions ?? configOptions;
   }
   await selectAcpNativeReasoning({

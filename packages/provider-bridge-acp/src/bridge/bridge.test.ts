@@ -1271,6 +1271,23 @@ describe("acp bridge", () => {
     expect(agentMessageTexts()).toContain("selected-model:fake/strong");
   });
 
+  it("retries ACP-native model selection while registration completes", async () => {
+    const { providerThreadId } = await startThread({
+      envVars: {
+        FAKE_ACP_MODEL_CONFIG: "1",
+        FAKE_ACP_SET_CONFIG_MODEL_ERROR_COUNT: "12",
+      },
+      model: "fake/strong",
+    });
+
+    sendTurnRequest("turn/start", providerThreadId, {
+      input: [{ type: "text", text: "echo-selected-model", mentions: [] }],
+    });
+    await waitForTurnCompleted();
+
+    expect(agentMessageTexts()).toContain("selected-model:fake/strong");
+  });
+
   it("preserves a model config option error without falling back to session/set_model", async () => {
     await expect(
       startThread({
