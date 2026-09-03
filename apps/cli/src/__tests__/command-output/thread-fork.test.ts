@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   collectLogLines,
+  getHelpOutput,
   runCommand,
   setupCommandOutputTestEnvironment,
   stubServerApi,
@@ -15,7 +16,7 @@ describe("bb thread fork command output", () => {
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
 
-  it("creates an idle isolated fork by default", async () => {
+  it("creates an idle source-environment fork by default", async () => {
     const thread = fixtures.makeThread({
       id: "thread-fork-idle",
       originKind: "fork",
@@ -33,7 +34,6 @@ describe("bb thread fork command output", () => {
       json: {
         sourceThreadId: "thread-source",
         origin: "cli",
-        workspace: "isolated",
         visibility: "visible",
       },
     });
@@ -42,7 +42,7 @@ describe("bb thread fork command output", () => {
     );
   });
 
-  it("forwards input, seed, fork point, permissions, visibility, and workspace", async () => {
+  it("forwards input, seed, fork point, permissions, visibility, and environment", async () => {
     const thread = fixtures.makeThread({
       id: "thread-fork-input",
       originKind: "fork",
@@ -69,8 +69,8 @@ describe("bb thread fork command output", () => {
         "accept-edits",
         "--visibility",
         "hidden",
-        "--workspace",
-        "reuse",
+        "--environment",
+        "env-fork",
       ],
       register,
     );
@@ -91,11 +91,74 @@ describe("bb thread fork command output", () => {
         origin: "cli",
         permissionMode: "accept-edits",
         visibility: "hidden",
-        workspace: "reuse",
+        environment: { type: "reuse", environmentId: "env-fork" },
       }),
     });
     expect(collectLogLines(vi.mocked(console.log))).toContain(
       "Visibility: hidden",
     );
+  });
+
+  it("creates a worktree on the source host when no host is explicit", async () => {
+    const source = fixtures.makeThread({
+      id: "thread-source",
+      environmentId: "env-source",
+      projectId: "proj-1",
+      providerId: "codex",
+    });
+    const sourceEnvironment = fixtures.makeEnvironment({
+      id: "env-source",
+      hostId: "host-source",
+      projectId: "proj-1",
+    });
+    const thread = fixtures.makeThread({
+      id: "thread-fork-worktree",
+      originKind: "fork",
+      projectId: "proj-1",
+      providerId: "codex",
+      sourceThreadId: source.id,
+    });
+    const post = vi.fn(async () => thread);
+    stubServerApi({
+      "v1.threads.:id.$get": vi.fn(async () => source),
+      "v1.environments.:id.$get": vi.fn(async () => sourceEnvironment),
+      "v1.threads.fork.$post": post,
+    });
+
+    await runCommand(
+      [
+        "thread",
+        "fork",
+        source.id,
+        "--new-environment",
+        "worktree",
+        "--base-branch",
+        "origin/release",
+      ],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      json: {
+        sourceThreadId: source.id,
+        origin: "cli",
+        visibility: "visible",
+        environment: {
+          type: "host",
+          hostId: "host-source",
+          workspace: {
+            type: "managed-worktree",
+            baseBranch: { kind: "named", name: "origin/release" },
+          },
+        },
+      },
+    });
+  });
+
+  it("does not offer a host selector", async () => {
+    const help = await getHelpOutput(["thread", "fork"], register);
+
+    expect(help).not.toContain("--host");
+    expect(help).not.toContain("--machine");
   });
 });
