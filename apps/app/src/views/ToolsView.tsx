@@ -162,6 +162,7 @@ function PluginsToolView({
 
 function PluginDetailToolView({ pluginId }: { pluginId: string }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [deleteTarget, setDeleteTarget] = useState<PluginListItem | null>(null);
   const [installTarget, setInstallTarget] =
     useState<PluginCatalogSearchEntry | null>(null);
@@ -258,6 +259,15 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
     },
     [canOpenPreferredDirectoryTarget, openPathInPreferredDirectoryTarget],
   );
+  const handleOpenCatalogPlugin = useCallback(
+    (nextPluginId: string) => {
+      navigate({
+        pathname: getPluginDetailRoutePath({ pluginId: nextPluginId }),
+        search: location.search,
+      });
+    },
+    [location.search, navigate],
+  );
 
   let detailContent: ReactNode;
   if (listQuery.isError) {
@@ -291,6 +301,8 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
         onOpenSource={handleOpenPluginSource}
         onDelete={setDeleteTarget}
         catalogEntry={selectedCatalogEntry ?? undefined}
+        catalogEntries={catalogQuery.data?.entries ?? []}
+        onOpenPlugin={handleOpenCatalogPlugin}
       />
     );
   } else if (selectedCatalogEntry !== null && !selectedCatalogEntry.installed) {
@@ -298,6 +310,8 @@ function PluginDetailToolView({ pluginId }: { pluginId: string }) {
       <CatalogPluginDetail
         entry={selectedCatalogEntry}
         onInstall={setInstallTarget}
+        catalogEntries={catalogQuery.data?.entries ?? []}
+        onOpenPlugin={handleOpenCatalogPlugin}
       />
     );
   } else if (catalogQuery.isError) {

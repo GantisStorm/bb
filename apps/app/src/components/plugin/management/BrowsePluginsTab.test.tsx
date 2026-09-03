@@ -36,7 +36,11 @@ const MEMORY_ENTRY: PluginCatalogSearchEntry = {
   publisherKey: "bb-official",
   publisherLabel: "BB Official",
   official: true,
-  author: { name: "BB", url: "https://github.com/get-bb" },
+  author: {
+    name: "BB",
+    github: "get-bb",
+    url: "https://github.com/get-bb",
+  },
   installed: false,
   installs: 4_210,
   compatible: true,
@@ -184,6 +188,25 @@ describe("BrowsePluginsTab", () => {
       screen.getByTestId("location-search").textContent ?? "",
     );
     expect(params.get("query")).toBe("Memory");
+  });
+
+  it("routes the card author name and preserves the Browse filters", async () => {
+    const onOpenPlugin = vi.fn();
+    renderBrowse(
+      { entries: [MEMORY_ENTRY], collections: [] },
+      "/extensions/plugins?category=memory-and-context&sort=recently-added",
+      vi.fn(),
+      onOpenPlugin,
+    );
+
+    fireEvent.click(await screen.findByRole("link", { name: "BB" }));
+    const params = new URLSearchParams(
+      screen.getByTestId("location-search").textContent ?? "",
+    );
+    expect(params.get("author")).toBe("11:bb-official:github:get-bb");
+    expect(params.getAll("category")).toEqual(["memory-and-context"]);
+    expect(params.get("sort")).toBe("recently-added");
+    expect(onOpenPlugin).not.toHaveBeenCalled();
   });
 
   it("round trips repeatable category parameters", async () => {
