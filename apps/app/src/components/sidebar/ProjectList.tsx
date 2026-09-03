@@ -795,7 +795,7 @@ export function ProjectListNewThreadAction({
     >
       <Icon name="MessageSquarePlus" />
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="min-w-0 truncate text-left">New thread</span>
+        <span className="min-w-0 flex-1 truncate text-left">New thread</span>
         {newThreadSplitIndicator.miniMap ? (
           <SplitPaneMiniMap
             slots={newThreadSplitIndicator.miniMap}
