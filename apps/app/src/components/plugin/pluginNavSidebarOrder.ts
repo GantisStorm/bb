@@ -1,3 +1,5 @@
+import { arrangeByStoredOrder } from "@/lib/stored-order";
+
 interface PluginNavPanelIdentity {
   pluginId: string;
   id: string;
@@ -24,26 +26,11 @@ export function arrangePluginNavPanels<TPanel extends PluginNavPanelIdentity>({
   storedOrder,
   hiddenKeys,
 }: ArrangePluginNavPanelsArgs<TPanel>): ArrangedPluginNavPanels<TPanel> {
-  const byKey = new Map(
-    panels.map((panel) => [getPluginNavPanelKey(panel), panel]),
-  );
-  const ordered: TPanel[] = [];
-  const normalizedOrder: string[] = [];
-  const seen = new Set<string>();
-  for (const key of storedOrder) {
-    if (seen.has(key)) continue;
-    seen.add(key);
-    normalizedOrder.push(key);
-    const panel = byKey.get(key);
-    if (panel) ordered.push(panel);
-  }
-  for (const panel of panels) {
-    const key = getPluginNavPanelKey(panel);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    normalizedOrder.push(key);
-    ordered.push(panel);
-  }
+  const { ordered, normalizedOrder } = arrangeByStoredOrder({
+    items: panels,
+    getId: getPluginNavPanelKey,
+    storedOrder,
+  });
 
   const hiddenSet = new Set(hiddenKeys);
   const visible: TPanel[] = [];
@@ -54,34 +41,6 @@ export function arrangePluginNavPanels<TPanel extends PluginNavPanelIdentity>({
   }
 
   return { visible, hidden, normalizedOrder };
-}
-
-interface ReorderPluginNavPanelsArgs {
-  activeKey: string;
-  overKey: string;
-  order: readonly string[];
-  visibleKeys: readonly string[];
-}
-
-export function reorderPluginNavPanels({
-  activeKey,
-  overKey,
-  order,
-  visibleKeys,
-}: ReorderPluginNavPanelsArgs): string[] | null {
-  const from = visibleKeys.indexOf(activeKey);
-  const to = visibleKeys.indexOf(overKey);
-  if (from === -1 || to === -1 || from === to) return null;
-
-  const nextVisible = [...visibleKeys];
-  const [moved] = nextVisible.splice(from, 1);
-  nextVisible.splice(to, 0, moved);
-
-  const visibleSet = new Set(visibleKeys);
-  let cursor = 0;
-  return order.map((key) =>
-    visibleSet.has(key) ? nextVisible[cursor++] : key,
-  );
 }
 
 export function seedLeadingNavPanelKeys(
@@ -106,14 +65,4 @@ export function showPluginNavPanel(
   key: string,
 ): string[] {
   return hiddenKeys.filter((hiddenKey) => hiddenKey !== key);
-}
-
-export function havePluginNavPanelOrdersDiverged(
-  left: readonly string[],
-  right: readonly string[],
-): boolean {
-  return (
-    left.length !== right.length ||
-    left.some((key, index) => key !== right[index])
-  );
 }
