@@ -387,6 +387,9 @@ describe("Account Pool plugin", () => {
       "--help",
     ]);
     expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("--login");
+    expect(help.stdout).toContain("account login-complete");
+    expect(help.stdout).toContain("--code-stdin");
     expect(help.stdout).toContain("--api-key-stdin");
     expect(help.stdout).toContain("Unsafe: exposes the key");
     const list = await fixture.host.harness.behavior.runCli([
@@ -457,6 +460,147 @@ describe("Account Pool plugin", () => {
     expect(
       await fixture.host.harness.behavior.callRpc("account.list", null),
     ).toEqual([]);
+  });
+
+  it("exposes manual Claude login over RPC and the two-step CLI", async () => {
+    const tokenBodies: object[] = [];
+    const oauth = await startUpstream(async (request, response) => {
+      if (request.url === "/token") {
+        tokenBodies.push(
+          JSON.parse((await readRequestBody(request)).toString()),
+        );
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            access_token: "login-access",
+            refresh_token: "login-refresh",
+            expires_in: 3600,
+          }),
+        );
+        return;
+      }
+      if (request.url === "/profile") {
+        expect(request.headers.authorization).toBe("Bearer login-access");
+        expect(request.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            account: {
+              email: "login@example.com",
+              display_name: "Logged-in Claude",
+              has_claude_pro: true,
+              rate_limit_tier: "default_claude_pro",
+            },
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    cleanups.push(oauth.close);
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-login-rpc-"));
+    const host = createFakePluginHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: sdkStubs(),
+    });
+    await createAccountPoolPlugin({
+      oauthAuthorizeUrl: `${oauth.url}/authorize`,
+      oauthTokenUrl: `${oauth.url}/token`,
+      oauthProfileUrl: `${oauth.url}/profile`,
+    })(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    const started = z
+      .object({ sessionId: z.string().uuid(), authorizeUrl: z.string().url() })
+      .strict()
+      .parse(await host.harness.behavior.callRpc("login.start", null));
+    const state = new URL(started.authorizeUrl).searchParams.get("state");
+    if (state === null) throw new Error("Login start did not return state.");
+    const account = accountSchema.parse(
+      await host.harness.behavior.callRpc("login.complete", {
+        sessionId: started.sessionId,
+        pasted: `login-code#${state}`,
+      }),
+    );
+    expect(account).toMatchObject({
+      label: "Logged-in Claude",
+      email: "login@example.com",
+      subscriptionType: "pro",
+      rateLimitTier: "default_claude_pro",
+      kind: "oauth",
+      enabled: true,
+    });
+    expect(tokenBodies).toHaveLength(1);
+    expect(tokenBodies[0]).toMatchObject({
+      code: "login-code",
+      state,
+      grant_type: "authorization_code",
+      redirect_uri: "https://console.anthropic.com/oauth/code/callback",
+      client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    });
+    const secret = accountSecretSchema.parse(
+      JSON.parse(
+        await fs.readFile(
+          path.join(
+            dataDir,
+            "plugins",
+            "account-pool",
+            "secrets",
+            "accounts",
+            `account-${account.id}.json`,
+          ),
+          "utf8",
+        ),
+      ),
+    );
+    expect(secret).toMatchObject({
+      kind: "oauth",
+      accessToken: "login-access",
+      refreshToken: "login-refresh",
+    });
+    expect(host.harness.inspection.realtimeSignals).toContainEqual({
+      channel: "accounts-changed",
+      payload: {},
+    });
+
+    const cliStarted = await host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "claude",
+      "--login",
+    ]);
+    expect(cliStarted.exitCode).toBe(0);
+    expect(cliStarted.stdout).toContain("Open this URL to sign in to Claude:");
+    expect(cliStarted.stdout).toContain("account login-complete");
+    expect(cliStarted.stdout).toContain("--code-stdin");
+    const sessionId = cliStarted.stdout.match(/Session ID: ([0-9a-f-]+)/u)?.[1];
+    const authorizeUrl = cliStarted.stdout.match(
+      /Open this URL to sign in to Claude:\n([^\n]+)/u,
+    )?.[1];
+    if (sessionId === undefined || authorizeUrl === undefined) {
+      throw new Error("CLI login start did not return its session and URL.");
+    }
+    const cliState = new URL(authorizeUrl).searchParams.get("state");
+    if (cliState === null) throw new Error("CLI login start omitted state.");
+    const cliCompleted = await host.harness.behavior.runCli([
+      "account",
+      "login-complete",
+      "--session",
+      sessionId,
+      "--code",
+      `cli-code#${cliState}`,
+    ]);
+    expect(cliCompleted).toMatchObject({
+      exitCode: 0,
+      stdout: expect.stringContaining("Added Logged-in Claude"),
+    });
+    expect(tokenBodies).toHaveLength(2);
+    expect(tokenBodies[1]).toMatchObject({ code: "cli-code", state: cliState });
   });
 
   it("resolves distinct secret machine tokens and honors per-thread bypass", async () => {

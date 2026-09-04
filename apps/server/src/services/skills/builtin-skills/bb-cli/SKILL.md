@@ -57,6 +57,8 @@ credentials, and inspect its proxy route and account quota with:
 
 ```sh
 bb plugin enable account-pool
+bb pool account add --provider claude --login
+printf '%s\n' "$CLAUDE_AUTH_CODE" | bb pool account login-complete --session <id> --code-stdin
 bb pool account add --provider claude --import
 printf '%s\n' "$ANTHROPIC_API_KEY" | bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]
 bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]
@@ -69,7 +71,11 @@ bb pool token rotate --machine <id-or-name>
 bb pool bypass <thread-id> [--off]
 ```
 
-Newly added or enabled accounts are available without a plugin reload. With an
+`--login` starts a PKCE session, prints a browser URL and session ID, then
+exits. Pipe the manual Claude callback code to `account login-complete` with
+that session ID within ten minutes. The code stays out of process arguments,
+and the browser and bb server may be on different machines. Newly added or
+enabled accounts are available without a plugin reload. With an
 enabled account whose secret file remains readable and valid, Claude Code
 sessions receive the pool route and a distinct secret token for their machine.
 Tokens are never printed. `status` prunes tokens for unenrolled machines and

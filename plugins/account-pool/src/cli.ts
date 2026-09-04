@@ -3,11 +3,13 @@ import {
   accountAddInputSchema,
   accountIdInputSchema,
   bypassInputSchema,
+  loginCompleteInputSchema,
   tokenRotateInputSchema,
   type AccountSummary,
   type PoolStatus,
 } from "./contracts.js";
 import type { PoolOperations } from "./operations.js";
+import type { ClaudeOAuthLogin } from "./oauth-login.js";
 
 interface ParsedFlags {
   booleans: Set<string>;
@@ -17,6 +19,8 @@ interface ParsedFlags {
 const HELP = [
   "Usage:",
   "  bb pool account add --provider claude --import [--label <text>] [--priority <n>]",
+  "  bb pool account add --provider claude --login",
+  "  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
   "  bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]",
   "  bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]  Unsafe: exposes the key in process arguments.",
   "  bb pool account list [--json]",
@@ -123,6 +127,7 @@ function json(value: object): string {
 export function registerPoolCli(
   bb: Pick<BbPluginApi, "cli">,
   operations: PoolOperations,
+  login: ClaudeOAuthLogin,
 ): void {
   bb.cli.register({
     name: "pool",
@@ -131,9 +136,15 @@ export function registerPoolCli(
       {
         name: "account-add",
         summary:
-          "Import Claude Code OAuth credentials or add an Anthropic API key",
+          "Sign in to Claude, import Claude Code credentials, or add an Anthropic API key",
         usage:
-          "bb pool account add --provider claude (--import | --api-key-stdin) [--label <text>] [--priority <n>]\nUnsafe compatibility form: bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]",
+          "bb pool account add --provider claude --login\nbb pool account add --provider claude (--import | --api-key-stdin) [--label <text>] [--priority <n>]\nUnsafe compatibility form: bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]",
+      },
+      {
+        name: "account-login-complete",
+        summary: "Complete a Claude browser login with its manual code",
+        usage:
+          "printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
       },
       {
         name: "account-list",
@@ -179,20 +190,43 @@ export function registerPoolCli(
         if (argv[0] === "account" && argv[1] === "add") {
           const flags = parseFlags(
             argv.slice(2),
-            ["import", "api-key-stdin"],
+            ["import", "api-key-stdin", "login"],
             ["provider", "api-key", "label", "priority"],
           );
           const imported = flags.booleans.has("import");
           const apiKeyStdin = flags.booleans.has("api-key-stdin");
+          const loginRequested = flags.booleans.has("login");
           const apiKey = flags.values.get("api-key");
           const sourceCount =
             Number(imported) +
             Number(apiKeyStdin) +
+            Number(loginRequested) +
             Number(apiKey !== undefined);
           if (sourceCount !== 1)
             throw new Error(
-              "Choose exactly one of --import, --api-key-stdin, or --api-key <key>.",
+              "Choose exactly one of --login, --import, --api-key-stdin, or --api-key <key>.",
             );
+          if (loginRequested) {
+            if (flags.values.get("provider") !== "claude") {
+              throw new Error("--login requires --provider claude.");
+            }
+            if (flags.values.has("label") || flags.values.has("priority")) {
+              throw new Error("--login does not accept --label or --priority.");
+            }
+            const started = login.start();
+            return {
+              exitCode: 0,
+              stdout: `${[
+                "Open this URL to sign in to Claude:",
+                started.authorizeUrl,
+                "",
+                `Session ID: ${started.sessionId}`,
+                "",
+                "After signing in, pipe the code shown on the final page into:",
+                `printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session ${started.sessionId} --code-stdin`,
+              ].join("\n")}\n`,
+            };
+          }
           if (apiKeyStdin) {
             throw new Error(
               "--api-key-stdin must be invoked through the bb CLI so it can read stdin safely.",
@@ -206,6 +240,27 @@ export function registerPoolCli(
             priority: Number(priorityText),
           });
           const account = await operations.add(input);
+          return {
+            exitCode: 0,
+            stdout: `Added ${account.label} (${account.id}).\n`,
+          };
+        }
+        if (argv[0] === "account" && argv[1] === "login-complete") {
+          const flags = parseFlags(
+            argv.slice(2),
+            ["code-stdin"],
+            ["session", "code"],
+          );
+          if (flags.booleans.has("code-stdin")) {
+            throw new Error(
+              "--code-stdin requires the current bb CLI so it can read stdin safely.",
+            );
+          }
+          const input = loginCompleteInputSchema.parse({
+            sessionId: flags.values.get("session"),
+            pasted: flags.values.get("code"),
+          });
+          const account = await login.complete(input);
           return {
             exitCode: 0,
             stdout: `Added ${account.label} (${account.id}).\n`,

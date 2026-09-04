@@ -496,7 +496,7 @@ describe("runPluginCliCommand", () => {
     ]);
   });
 
-  it("materializes an API key from stdin only in the proxied request", async () => {
+  it("materializes an arbitrary stdin flag only in the proxied request", async () => {
     const requests: string[][] = [];
     vi.stubGlobal(
       "fetch",
@@ -517,21 +517,23 @@ describe("runPluginCliCommand", () => {
     const input = {
       isTTY: false,
       async *[Symbol.asyncIterator]() {
-        yield Buffer.from("sk-from-stdin\n");
+        yield Buffer.from("opaque-credential\n");
       },
     };
+    const argv = ["deploy", "--credential-stdin", "--format", "json"];
 
     await expect(
       runPluginCliCommand(
         "http://localhost",
-        "account-pool",
-        ["account", "add", "--provider", "claude", "--api-key-stdin"],
+        "fixture",
+        argv,
         { stdout: output, stderr: output },
         input,
       ),
     ).resolves.toBe(0);
+    expect(argv).toEqual(["deploy", "--credential-stdin", "--format", "json"]);
     expect(requests).toEqual([
-      ["account", "add", "--provider", "claude", "--api-key", "sk-from-stdin"],
+      ["deploy", "--credential", "opaque-credential", "--format", "json"],
     ]);
     expect(writes).toEqual([]);
   });
