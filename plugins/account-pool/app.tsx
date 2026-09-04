@@ -10,7 +10,6 @@ import {
   useBbNavigate,
   useRealtime,
   useRpc,
-  useSettings,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -33,13 +32,18 @@ import { ResponsiveDrawerShell } from "@bb/shared-ui/responsive-overlay";
 import { Switch } from "@bb/shared-ui/switch";
 import type {
   AccountSummary,
+  AccountPoolConfig,
+  AccountPoolConfigSetInput,
   FamilyQuota,
   ModelFamily,
   PoolProvider,
   PoolStatus,
 } from "./src/contracts.js";
 import type { accountPoolRpcContract } from "./src/rpc.js";
-import { ACCOUNT_POOL_ACCOUNTS_CHANGED } from "./src/realtime.js";
+import {
+  ACCOUNT_POOL_ACCOUNTS_CHANGED,
+  ACCOUNT_POOL_CONFIG_CHANGED,
+} from "./src/realtime.js";
 
 interface LoginStep {
   sessionId: string;
@@ -56,6 +60,20 @@ type DrawerState =
   | { kind: "account" | "priority" | "remove"; accountId: string }
   | { kind: "claude-login" | "codex-login" | "api-key" }
   | null;
+
+type ConfigField = keyof AccountPoolConfig;
+
+interface ConfigDrafts {
+  anthropicUpstreamBaseUrl: string;
+  codexUpstreamBaseUrl: string;
+  switchThreshold: string;
+}
+
+interface ConfigErrors {
+  anthropicUpstreamBaseUrl: string | null;
+  codexUpstreamBaseUrl: string | null;
+  switchThreshold: string | null;
+}
 
 const PROVIDERS: Array<{
   id: PoolProvider;
@@ -91,6 +109,25 @@ const MODEL_FAMILIES: ModelFamily[] = [
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function httpUrlError(value: string): string | null {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:"
+      ? null
+      : "Must be an HTTP or HTTPS URL.";
+  } catch {
+    return "Must be a valid URL.";
+  }
+}
+
+function configDrafts(config: AccountPoolConfig): ConfigDrafts {
+  return {
+    anthropicUpstreamBaseUrl: config.anthropicUpstreamBaseUrl,
+    codexUpstreamBaseUrl: config.codexUpstreamBaseUrl,
+    switchThreshold: String(config.switchThreshold),
+  };
 }
 function percent(value: number | null): string {
   return value === null ? "—" : `${Math.round(value * 100)}%`;
@@ -165,9 +202,7 @@ function SettingsSection({
         </div>
         <div className="shrink-0 self-start">{action}</div>
       </div>
-      <div className="rounded-lg border border-border bg-card px-4 py-3.5">
-        {children}
-      </div>
+      <div className="border-t border-border">{children}</div>
     </section>
   );
 }
@@ -225,10 +260,10 @@ function AccountRow({
 }) {
   const status = statusPresentation(account);
   return (
-    <div className="flex items-center gap-3 py-2.5 text-sm first:pt-0 last:pb-0">
+    <div className="flex items-center gap-3 text-sm">
       <div
         className={cn(
-          "group -mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 transition-colors hover:bg-state-hover focus-within:bg-state-hover",
+          "group -mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2.5 transition-colors hover:bg-state-hover focus-within:bg-state-hover",
           !account.enabled && "opacity-55",
         )}
       >
@@ -490,11 +525,52 @@ function DrawerFrame({
   );
 }
 
+function ConfigFieldRow({
+  label,
+  description,
+  error,
+  children,
+}: {
+  label: string;
+  description: string;
+  error: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2.5">
+      <div className="min-w-0">
+        <div className="text-sm text-foreground">{label}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          {description}
+        </div>
+      </div>
+      <div className="w-80 max-w-[50%] shrink-0">
+        {children}
+        {error === null ? null : (
+          <p className="mt-1 text-xs text-destructive-text" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AccountPoolSettings() {
   const rpc = useRpc<typeof accountPoolRpcContract>();
   const navigate = useBbNavigate();
-  const settings = useSettings();
   const [status, setStatus] = useState<PoolStatus | null>(null);
+  const [config, setConfig] = useState<AccountPoolConfig | null>(null);
+  const [drafts, setDrafts] = useState<ConfigDrafts>({
+    anthropicUpstreamBaseUrl: "",
+    codexUpstreamBaseUrl: "",
+    switchThreshold: "",
+  });
+  const [configErrors, setConfigErrors] = useState<ConfigErrors>({
+    anthropicUpstreamBaseUrl: null,
+    codexUpstreamBaseUrl: null,
+    switchThreshold: null,
+  });
   const [drawer, setDrawer] = useState<DrawerState>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -506,8 +582,11 @@ function AccountPoolSettings() {
   const [priority, setPriority] = useState("100");
   const [countdown, setCountdown] = useState(0);
   const mounted = useRef(true);
-  const thresholdValue = settings.values?.switchThreshold;
-  const threshold = typeof thresholdValue === "number" ? thresholdValue : 0.98;
+  const threshold = config?.switchThreshold ?? 0.98;
+  const applyConfig = useCallback((next: AccountPoolConfig) => {
+    setConfig(next);
+    setDrafts(configDrafts(next));
+  }, []);
   const refresh = useCallback(async () => {
     try {
       const next = await rpc.call("status.get", null);
@@ -516,15 +595,27 @@ function AccountPoolSettings() {
       if (mounted.current) setError(errorText(loadError));
     }
   }, [rpc]);
+  const refreshConfig = useCallback(async () => {
+    try {
+      const next = await rpc.call("config.get", null);
+      if (mounted.current) applyConfig(next);
+    } catch (loadError) {
+      if (mounted.current) setError(errorText(loadError));
+    }
+  }, [applyConfig, rpc]);
   useEffect(() => {
     mounted.current = true;
     void refresh();
+    void refreshConfig();
     return () => {
       mounted.current = false;
     };
-  }, [refresh]);
+  }, [refresh, refreshConfig]);
   useRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, () => {
     void refresh();
+  });
+  useRealtime(ACCOUNT_POOL_CONFIG_CHANGED, () => {
+    void refreshConfig();
   });
   useEffect(() => {
     if (codexStep === null || loginDone !== null) return;
@@ -580,6 +671,59 @@ function AccountPoolSettings() {
       await refresh();
     } catch (actionError) {
       setError(errorText(actionError));
+    } finally {
+      setPending(null);
+    }
+  }
+  function updateConfigDraft(field: ConfigField, value: string): void {
+    setDrafts((current) => ({ ...current, [field]: value }));
+    setConfigErrors((current) => ({ ...current, [field]: null }));
+  }
+  async function saveConfigField(field: ConfigField): Promise<void> {
+    if (config === null || pending !== null) return;
+    let update: AccountPoolConfigSetInput;
+    if (field === "switchThreshold") {
+      const raw = drafts.switchThreshold.trim();
+      const value = Number(raw);
+      if (
+        raw.length === 0 ||
+        !Number.isFinite(value) ||
+        value <= 0 ||
+        value > 1
+      ) {
+        setConfigErrors((current) => ({
+          ...current,
+          switchThreshold: "Must be greater than 0 and at most 1.",
+        }));
+        return;
+      }
+      if (value === config.switchThreshold) return;
+      update = { switchThreshold: value };
+    } else {
+      const value = drafts[field].trim();
+      const validationError = httpUrlError(value);
+      if (validationError !== null) {
+        setConfigErrors((current) => ({
+          ...current,
+          [field]: validationError,
+        }));
+        return;
+      }
+      if (value === config[field]) return;
+      update =
+        field === "anthropicUpstreamBaseUrl"
+          ? { anthropicUpstreamBaseUrl: value }
+          : { codexUpstreamBaseUrl: value };
+    }
+    setPending(`config-${field}`);
+    setConfigErrors((current) => ({ ...current, [field]: null }));
+    try {
+      applyConfig(await rpc.call("config.set", update));
+    } catch (saveError) {
+      setConfigErrors((current) => ({
+        ...current,
+        [field]: errorText(saveError),
+      }));
     } finally {
       setPending(null);
     }
@@ -671,7 +815,7 @@ function AccountPoolSettings() {
         </div>
       )}
       {status !== null && accounts.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card px-5 py-6 text-center">
+        <div className="rounded-lg border border-dashed border-border px-5 py-6 text-center">
           <h2 className="text-sm font-semibold text-foreground">
             No accounts in the pool
           </h2>
@@ -726,9 +870,11 @@ function AccountPoolSettings() {
             }
           >
             {status === null ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
+              <p className="py-2.5 text-sm text-muted-foreground">Loading…</p>
             ) : providerAccounts.length === 0 ? (
-              <p className="text-sm text-subtle-foreground">No accounts yet.</p>
+              <p className="py-2.5 text-sm text-subtle-foreground">
+                No accounts yet.
+              </p>
             ) : (
               <div className="divide-y divide-border">
                 {providerAccounts.map((account) => (
@@ -748,8 +894,8 @@ function AccountPoolSettings() {
           </SettingsSection>
         );
       })}
-      <Collapsible>
-        <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md py-2 text-sm font-medium text-foreground">
+      <Collapsible className="rounded-lg border border-border px-4">
+        <CollapsibleTrigger className="flex w-full items-center gap-2 py-2.5 text-sm font-medium text-foreground">
           <Icon
             name="ChevronRight"
             className="size-4 transition-transform [[data-state=open]>&]:rotate-90"
@@ -757,15 +903,87 @@ function AccountPoolSettings() {
           Advanced
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="rounded-lg border border-border bg-card px-4 py-3.5">
+          <div className="divide-y divide-border border-t border-border">
+            <ConfigFieldRow
+              label="Anthropic upstream base URL"
+              description="QA override for Anthropic traffic."
+              error={configErrors.anthropicUpstreamBaseUrl}
+            >
+              <Input
+                aria-label="Anthropic upstream base URL"
+                aria-invalid={
+                  configErrors.anthropicUpstreamBaseUrl === null
+                    ? undefined
+                    : true
+                }
+                disabled={config === null || pending !== null}
+                value={drafts.anthropicUpstreamBaseUrl}
+                onChange={(event) =>
+                  updateConfigDraft(
+                    "anthropicUpstreamBaseUrl",
+                    event.target.value,
+                  )
+                }
+                onBlur={() => void saveConfigField("anthropicUpstreamBaseUrl")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+            </ConfigFieldRow>
+            <ConfigFieldRow
+              label="Codex upstream base URL"
+              description="QA override for ChatGPT Codex traffic."
+              error={configErrors.codexUpstreamBaseUrl}
+            >
+              <Input
+                aria-label="Codex upstream base URL"
+                aria-invalid={
+                  configErrors.codexUpstreamBaseUrl === null ? undefined : true
+                }
+                disabled={config === null || pending !== null}
+                value={drafts.codexUpstreamBaseUrl}
+                onChange={(event) =>
+                  updateConfigDraft("codexUpstreamBaseUrl", event.target.value)
+                }
+                onBlur={() => void saveConfigField("codexUpstreamBaseUrl")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+            </ConfigFieldRow>
+            <ConfigFieldRow
+              label="Quota switch threshold"
+              description="Stop selecting an account at this quota fraction."
+              error={configErrors.switchThreshold}
+            >
+              <Input
+                type="number"
+                min="0.01"
+                max="1"
+                step="0.01"
+                aria-label="Quota switch threshold"
+                aria-invalid={
+                  configErrors.switchThreshold === null ? undefined : true
+                }
+                disabled={config === null || pending !== null}
+                value={drafts.switchThreshold}
+                onChange={(event) =>
+                  updateConfigDraft("switchThreshold", event.target.value)
+                }
+                onBlur={() => void saveConfigField("switchThreshold")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+            </ConfigFieldRow>
             <div className="flex items-start justify-between gap-4">
-              <div>
+              <div className="py-2.5">
                 <div className="text-sm text-foreground">Machine tokens</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   {hubHosts}
                 </div>
               </div>
-              <div className="flex flex-wrap justify-end gap-2">
+              <div className="flex flex-wrap justify-end gap-2 py-2.5">
                 {status?.hosts.map((host) => (
                   <Button
                     key={host.hostId}
@@ -1233,5 +1451,8 @@ function LoginDrawer({
 }
 
 export default definePluginApp((app) => {
-  app.slots.settingsSection({ id: "accounts", component: AccountPoolSettings });
+  app.slots.settingsSection({
+    id: "accounts",
+    component: AccountPoolSettings,
+  });
 });

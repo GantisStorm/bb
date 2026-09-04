@@ -498,7 +498,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Supply a heading and a one-line description for bb to render above it",
         ],
         apiSymbols: ["PluginSettingsSectionRegistration"],
-        firstParty: ["Keep Awake", "Memory", "Remote access"],
+        firstParty: ["Account Pooler", "Keep Awake", "Memory", "Remote access"],
       },
     ],
   },
