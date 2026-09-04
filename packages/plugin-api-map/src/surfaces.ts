@@ -394,6 +394,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginProviderIconRegistration",
           "ExperimentalPluginProviderEnvContext",
           "ExperimentalPluginProviderEnvEntry",
+          "ExperimentalPluginProviderEnvHealthContext",
+          "ExperimentalPluginProviderEnvHealth",
         ],
         firstParty: [
           "ACP providers",

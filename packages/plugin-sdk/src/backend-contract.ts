@@ -1346,6 +1346,15 @@ export interface PluginProviders {
       | readonly ExperimentalPluginProviderEnvEntry[]
       | Promise<readonly ExperimentalPluginProviderEnvEntry[]>,
   ): void;
+  experimental_contributeEnvHealth(
+    providerId: string,
+    resolve: (
+      context: ExperimentalPluginProviderEnvHealthContext,
+    ) =>
+      | ExperimentalPluginProviderEnvHealth
+      | null
+      | Promise<ExperimentalPluginProviderEnvHealth | null>,
+  ): void;
 }
 
 export interface ExperimentalPluginProviderEnvContext {
@@ -1359,6 +1368,15 @@ export interface ExperimentalPluginProviderEnvEntry {
   value: string | { serverPath: string };
   reason: string;
   secret: boolean;
+}
+
+export interface ExperimentalPluginProviderEnvHealthContext {
+  hostId: string;
+}
+
+export interface ExperimentalPluginProviderEnvHealth {
+  label: string;
+  statusMessage: string;
 }
 
 // ---------------------------------------------------------------------------

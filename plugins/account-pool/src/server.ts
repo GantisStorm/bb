@@ -6,15 +6,25 @@ import type { ImportedClaudeCredentials } from "./credentials.js";
 import { createHub } from "./hub.js";
 import { PoolOperations } from "./operations.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
-import { AccountStore, QUOTA_MIGRATIONS, QuotaStore } from "./store.js";
+import {
+  AccountStore,
+  HubTokenStore,
+  QUOTA_MIGRATIONS,
+  QuotaStore,
+  RoutingStore,
+} from "./store.js";
 
 export interface AccountPoolPluginOptions {
   fetch?: typeof fetch;
   now?: () => number;
   refreshUrl?: string;
   drainTimeoutMs?: number;
+  disposeTimeoutMs?: number;
   importCredentials?: () => Promise<ImportedClaudeCredentials>;
 }
+
+const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
+const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
 
 export function helloResponse(): Response {
   return new Response(null, { status: 200 });
@@ -63,17 +73,22 @@ export function createAccountPoolPlugin(
     );
     const accounts = new AccountStore(bb.storage.kv, secretDir);
     await accounts.initialize();
+    const now = options.now ?? Date.now;
+    const hubTokens = new HubTokenStore(secretDir, now);
+    await hubTokens.initialize();
+    const enrolledHosts = await bb.sdk.hosts.list();
+    await hubTokens.prune(enrolledHosts.map((host) => host.id));
+    const routing = new RoutingStore(bb.storage.kv, now);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);
     const quotas = new QuotaStore(db);
-    const hubKey = await accounts.hubKey();
     const hub = createHub({
       accounts,
       quotas,
-      hubKey,
+      hubTokens,
       getSettings: () => currentSettings,
       fetch: options.fetch,
-      now: options.now,
+      now,
       refreshUrl: options.refreshUrl,
       drainTimeoutMs: options.drainTimeoutMs,
     });
@@ -81,6 +96,12 @@ export function createAccountPoolPlugin(
       accounts,
       quotas,
       hub,
+      hubTokens,
+      routing,
+      () => bb.sdk.hosts.list(),
+      async (hostId) =>
+        (await bb.sdk.system.providerStates({ hostId })).providers,
+      now,
       options.importCredentials,
     );
     if ((await accounts.list()).every((account) => !account.enabled)) {
@@ -90,6 +111,74 @@ export function createAccountPoolPlugin(
     }
     bb.rpc.register(accountPoolRpcContract, createRpcHandlers(operations));
     registerPoolCli(bb, operations);
+    bb.providers.experimental_contributeEnv("claude-code", async (context) => {
+      if (
+        (await routing.isBypassed(context.threadId)) ||
+        !(await operations.hasUsableEnabledAccount())
+      ) {
+        return [];
+      }
+      const token = await hubTokens.forHost(context.hostId);
+      await routing.recordRouted(context.threadId, context.hostId);
+      return [
+        {
+          name: "ANTHROPIC_BASE_URL",
+          value: {
+            serverPath: "/api/v1/plugins/account-pool/http",
+          },
+          reason: "Routed through the Account Pool hub",
+          secret: false,
+        },
+        {
+          name: "ANTHROPIC_AUTH_TOKEN",
+          value: token,
+          reason: "Account Pool hub token for this machine",
+          secret: true,
+        },
+        {
+          name: "ENABLE_TOOL_SEARCH",
+          value: "true",
+          reason:
+            "Claude Code turns tool search off behind a custom base URL; the hub forwards tool_reference blocks",
+          secret: false,
+        },
+      ];
+    });
+    bb.providers.experimental_contributeEnvHealth("claude-code", async () =>
+      (await operations.hasUsableEnabledAccount())
+        ? {
+            label: "Proxied",
+            statusMessage: "Credentials are provided by the Account Pool hub.",
+          }
+        : null,
+    );
+    bb.onDispose(async () => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const inspection = inspectDisableState(bb, operations);
+        const timeout = new Promise<typeof DISPOSE_INSPECTION_TIMEOUT>(
+          (resolve) => {
+            timer = setTimeout(
+              () => resolve(DISPOSE_INSPECTION_TIMEOUT),
+              options.disposeTimeoutMs ?? DISPOSE_INSPECTION_TIMEOUT_MS,
+            );
+            timer.unref();
+          },
+        );
+        const result = await Promise.race([inspection, timeout]);
+        if (result === DISPOSE_INSPECTION_TIMEOUT) {
+          bb.log.debug("Account Pool disable inspection timed out.");
+          return;
+        }
+        if (result !== null) bb.log.warn(result);
+      } catch (error) {
+        bb.log.debug(
+          `Account Pool disable inspection skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+      }
+    });
     bb.http.route(
       "POST",
       "/v1/messages",
@@ -102,16 +191,27 @@ export function createAccountPoolPlugin(
       (context) => hub.handle(context.req.raw),
       { auth: "none" },
     );
-    bb.http.route(
-      "HEAD",
-      "/api/hello",
-      () => helloResponse(),
-      { auth: "none" },
-    );
+    bb.http.route("HEAD", "/api/hello", () => helloResponse(), {
+      auth: "none",
+    });
     bb.background.service("hub", {
       start: (signal) => hub.start(signal),
     });
   };
+}
+
+async function inspectDisableState(
+  bb: BbPluginApi,
+  operations: PoolOperations,
+): Promise<string | null> {
+  const installed = await bb.sdk.plugins.list();
+  const disabled =
+    installed.plugins.find((plugin) => plugin.id === bb.pluginId)?.enabled ===
+    false;
+  if (!disabled) return null;
+  const warnings = await operations.routedThreadsWithoutLocalLogin();
+  if (warnings.length === 0) return null;
+  return `Account Pool disabled with ${warnings.length} recently routed thread${warnings.length === 1 ? "" : "s"} on machines without a local Claude login. Run bb pool status before disabling to inspect them.`;
 }
 
 export default createAccountPoolPlugin();

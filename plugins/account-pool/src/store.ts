@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -7,14 +7,47 @@ import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
   accountSchema,
   accountSecretSchema,
+  hubTokenSummarySchema,
   quotaSchema,
   type Account,
   type AccountQuota,
   type AccountSecret,
+  type HubTokenSummary,
 } from "./contracts.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
 const accountsSchema = z.array(accountSchema);
+const HUB_TOKEN_PREFIX = "hub-token-";
+const HUB_TOKEN_GRACE_MS = 10 * 60 * 1_000;
+const HUB_TOKEN_LAST_USED_PERSIST_MS = 60 * 1_000;
+
+const tokenValueSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
+const priorHubTokenSchema = z
+  .object({
+    value: tokenValueSchema,
+    expiresAt: z.number().int().nonnegative(),
+  })
+  .strict();
+const storedHubTokenSchema = z
+  .object({
+    hostId: z.string().min(1),
+    value: tokenValueSchema,
+    mintedAt: z.number().int().nonnegative(),
+    lastUsedAt: z.number().int().nonnegative().nullable(),
+    previous: z.array(priorHubTokenSchema),
+  })
+  .strict();
+type StoredHubToken = z.infer<typeof storedHubTokenSchema>;
+
+const routedThreadSchema = z
+  .object({
+    hostId: z.string().min(1),
+    routedAt: z.number().int().nonnegative(),
+  })
+  .strict();
+export type RoutedThread = z.infer<typeof routedThreadSchema> & {
+  threadId: string;
+};
 
 export class AccountStore {
   private mutationLock: Promise<void> | null = null;
@@ -104,32 +137,6 @@ export class AccountStore {
     await fs.chmod(destination, 0o600);
   }
 
-  async hubKey(): Promise<string> {
-    await this.initialize();
-    const file = path.join(this.secretsDir, "hub-key");
-    try {
-      const existing = (await fs.readFile(file, "utf8")).trim();
-      if (existing) return existing;
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-    }
-    const key = randomBytes(32).toString("base64url");
-    const temporary = `${file}.${randomUUID()}.tmp`;
-    await fs.writeFile(temporary, `${key}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    try {
-      await fs.link(temporary, file);
-    } catch (error) {
-      if (!isExistingFile(error)) throw error;
-    } finally {
-      await fs.rm(temporary, { force: true });
-    }
-    await fs.chmod(file, 0o600);
-    return (await fs.readFile(file, "utf8")).trim();
-  }
-
   private accountSecretPath(id: string): string {
     z.string().uuid().parse(id);
     return path.join(this.secretsDir, `account-${id}.json`);
@@ -153,12 +160,280 @@ export class AccountStore {
   }
 }
 
-function isMissingFile(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+export class HubTokenStore {
+  private readonly hostLocks = new Map<string, Promise<void>>();
+  private readonly tokens = new Map<string, StoredHubToken>();
+  private readonly persistedLastUsedAt = new Map<string, number | null>();
+  private initialization: Promise<void> | null = null;
+
+  constructor(
+    private readonly secretsDir: string,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async initialize(): Promise<void> {
+    this.initialization ??= this.load();
+    await this.initialization;
+  }
+
+  private async load(): Promise<void> {
+    await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(this.secretsDir, 0o700);
+    await fs.rm(path.join(this.secretsDir, "hub-key"), { force: true });
+    const names = await fs.readdir(this.secretsDir);
+    for (const name of names) {
+      if (!name.startsWith(HUB_TOKEN_PREFIX) || !name.endsWith(".json"))
+        continue;
+      const token = storedHubTokenSchema.parse(
+        JSON.parse(await fs.readFile(path.join(this.secretsDir, name), "utf8")),
+      );
+      this.tokens.set(token.hostId, token);
+      this.persistedLastUsedAt.set(token.hostId, token.lastUsedAt);
+    }
+  }
+
+  async forHost(hostId: string): Promise<string> {
+    await this.initialize();
+    return this.serialized(hostId, async () => {
+      const existing = this.read(hostId);
+      if (existing !== null) return existing.value;
+      const created = this.create(hostId);
+      await this.write(hostId, created);
+      return created.value;
+    });
+  }
+
+  async rotate(hostId: string): Promise<HubTokenSummary> {
+    await this.initialize();
+    return this.serialized(hostId, async () => {
+      const current = this.read(hostId);
+      const now = this.now();
+      const next = this.create(hostId);
+      if (current !== null) {
+        next.previous = [
+          { value: current.value, expiresAt: now + HUB_TOKEN_GRACE_MS },
+          ...current.previous.filter((token) => token.expiresAt > now),
+        ];
+      }
+      await this.write(hostId, next);
+      return this.summary(next);
+    });
+  }
+
+  async authenticate(presented: string | null): Promise<string | null> {
+    if (presented === null) return null;
+    await this.initialize();
+    const now = this.now();
+    let matchedHostId: string | null = null;
+    for (const token of this.readAll()) {
+      if (matchesStoredToken(token, presented, now))
+        matchedHostId = token.hostId;
+    }
+    if (matchedHostId === null) return null;
+    return this.serialized(matchedHostId, async () => {
+      const matched = this.read(matchedHostId);
+      if (
+        matched === null ||
+        !matchesStoredToken(matched, presented, this.now())
+      )
+        return null;
+      const usedAt = this.now();
+      const next = storedHubTokenSchema.parse({
+        ...matched,
+        lastUsedAt: usedAt,
+        previous: matched.previous.filter((token) => token.expiresAt > usedAt),
+      });
+      const persistedAt = this.persistedLastUsedAt.get(matched.hostId) ?? null;
+      if (
+        persistedAt === null ||
+        usedAt - persistedAt >= HUB_TOKEN_LAST_USED_PERSIST_MS
+      ) {
+        await this.write(matched.hostId, next);
+      } else {
+        this.tokens.set(matched.hostId, next);
+      }
+      return matched.hostId;
+    });
+  }
+
+  async list(): Promise<HubTokenSummary[]> {
+    await this.initialize();
+    return this.readAll()
+      .map((token) => this.summary(token))
+      .sort((left, right) => left.hostId.localeCompare(right.hostId));
+  }
+
+  async prune(hostIds: readonly string[]): Promise<void> {
+    await this.initialize();
+    const enrolled = new Set(hostIds);
+    const stale = [...this.tokens.keys()].filter(
+      (hostId) => !enrolled.has(hostId),
+    );
+    await Promise.all(
+      stale.map((hostId) =>
+        this.serialized(hostId, async () => {
+          await fs.rm(this.tokenPath(hostId), { force: true });
+          this.tokens.delete(hostId);
+          this.persistedLastUsedAt.delete(hostId);
+        }),
+      ),
+    );
+  }
+
+  private create(hostId: string): StoredHubToken {
+    return storedHubTokenSchema.parse({
+      hostId,
+      value: randomBytes(32).toString("base64url"),
+      mintedAt: this.now(),
+      lastUsedAt: null,
+      previous: [],
+    });
+  }
+
+  private summary(token: StoredHubToken): HubTokenSummary {
+    return hubTokenSummarySchema.parse({
+      hostId: token.hostId,
+      hostName: null,
+      mintedAt: token.mintedAt,
+      lastUsedAt: token.lastUsedAt,
+    });
+  }
+
+  private read(hostId: string): StoredHubToken | null {
+    const token = this.tokens.get(hostId);
+    if (token === undefined) return null;
+    const previous = token.previous.filter(
+      (candidate) => candidate.expiresAt > this.now(),
+    );
+    if (previous.length === token.previous.length) return token;
+    const pruned = storedHubTokenSchema.parse({ ...token, previous });
+    this.tokens.set(hostId, pruned);
+    return pruned;
+  }
+
+  private readAll(): StoredHubToken[] {
+    return [...this.tokens.keys()].flatMap((hostId) => {
+      const token = this.read(hostId);
+      return token === null ? [] : [token];
+    });
+  }
+
+  private async write(hostId: string, token: StoredHubToken): Promise<void> {
+    await this.initialize();
+    const destination = this.tokenPath(hostId);
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    await this.writeFile(temporary, token);
+    await fs.rename(temporary, destination);
+    await fs.chmod(destination, 0o600);
+    this.tokens.set(hostId, token);
+    this.persistedLastUsedAt.set(hostId, token.lastUsedAt);
+  }
+
+  private async writeFile(file: string, token: StoredHubToken): Promise<void> {
+    await fs.writeFile(
+      file,
+      `${JSON.stringify(storedHubTokenSchema.parse(token))}\n`,
+      {
+        encoding: "utf8",
+        mode: 0o600,
+      },
+    );
+  }
+
+  private tokenPath(hostId: string): string {
+    const safeHostId = z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/u)
+      .parse(hostId);
+    return path.join(this.secretsDir, `${HUB_TOKEN_PREFIX}${safeHostId}.json`);
+  }
+
+  private async serialized<T>(
+    hostId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.hostLocks.get(hostId) ?? Promise.resolve();
+    let release = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.hostLocks.set(hostId, tail);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.hostLocks.get(hostId) === tail) this.hostLocks.delete(hostId);
+    }
+  }
 }
 
-function isExistingFile(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "EEXIST";
+function matchesStoredToken(
+  token: StoredHubToken,
+  presented: string,
+  now: number,
+): boolean {
+  const currentMatches = safeTokenEqual(presented, token.value);
+  let previousMatches = false;
+  for (const previous of token.previous) {
+    const equal = safeTokenEqual(presented, previous.value);
+    if (previous.expiresAt > now && equal) previousMatches = true;
+  }
+  return currentMatches || previousMatches;
+}
+
+export class RoutingStore {
+  constructor(
+    private readonly kv: PluginKvStorage,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  async isBypassed(threadId: string): Promise<boolean> {
+    return (await this.kv.get(this.bypassKey(threadId))) === true;
+  }
+
+  async setBypassed(threadId: string, bypassed: boolean): Promise<void> {
+    if (bypassed) await this.kv.set(this.bypassKey(threadId), true);
+    else await this.kv.delete(this.bypassKey(threadId));
+  }
+
+  async recordRouted(threadId: string, hostId: string): Promise<void> {
+    await this.kv.set(this.routedKey(threadId), {
+      hostId,
+      routedAt: this.now(),
+    });
+  }
+
+  async listRoutedSince(cutoff: number): Promise<RoutedThread[]> {
+    const routed: RoutedThread[] = [];
+    for (const key of await this.kv.list("routed:")) {
+      const value = routedThreadSchema.parse(await this.kv.get(key));
+      if (value.routedAt < cutoff) {
+        await this.kv.delete(key);
+        continue;
+      }
+      routed.push({ threadId: key.slice("routed:".length), ...value });
+    }
+    return routed;
+  }
+
+  private bypassKey(threadId: string): string {
+    return `bypass:${z.string().min(1).parse(threadId)}`;
+  }
+
+  private routedKey(threadId: string): string {
+    return `routed:${z.string().min(1).parse(threadId)}`;
+  }
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return (
+    leftBytes.length === rightBytes.length &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
 }
 
 const quotaRowSchema = z
