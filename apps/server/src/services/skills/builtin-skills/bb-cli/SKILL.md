@@ -121,3 +121,12 @@ bb skill list --environment "$BB_ENVIRONMENT_ID" --json
 
 Confirm the command result and any affected thread, environment, plugin, or
 remote service. Report the stable ID or URL that the user needs next.
+
+
+## Plugin configuration
+
+Use `bb plugin config <id>` to inspect the plugin’s configuration and
+`bb plugin config <id> set <key> <value>` to change it. Read the plugin’s own
+guidance for its delivery commands and supported clients. A server-side
+notification switch does not grant browser or operating system permission;
+that permission is granted from the target client’s settings.
