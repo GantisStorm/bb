@@ -9,6 +9,8 @@ import {
   accountSchema,
   accountSecretSchema,
   accountSummarySchema,
+  codexLoginPollSchema,
+  codexLoginStartSchema,
   statusSchema,
   type AccountSummary,
 } from "./contracts.js";
@@ -162,6 +164,14 @@ function importedCredentials(
     accountUuid: "11111111-1111-4111-8111-111111111111",
     ...overrides,
   };
+}
+
+function testJwt(payload: object): string {
+  return [
+    Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    "signature",
+  ].join(".");
 }
 
 async function createFixture(args: {
@@ -426,7 +436,8 @@ describe("Account Pool plugin", () => {
       }),
     ).resolves.toEqual({
       label: "Proxied",
-      statusMessage: "Credentials are provided by the Account Pool hub.",
+      statusMessage:
+        "Credentials are provided by the Account Pooler hub.",
     });
     const httpResponse = await host.harness.behavior.fetchHttp(
       "POST",
@@ -592,7 +603,10 @@ describe("Account Pool plugin", () => {
       { headers: { "x-bb-account-pool-token": "invalid" } },
     );
     expect(rejected.closeCalls).toEqual([
-      { code: 1008, reason: "invalid Account Pool token" },
+      {
+        code: 1008,
+        reason: "invalid Account Pooler token",
+      },
     ]);
     const socket = await host.harness.experimental_openWebSocket(
       "/v1/responses",
@@ -1183,6 +1197,173 @@ describe("Account Pool plugin", () => {
     expect(tokenBodies[1]).toMatchObject({ code: "cli-code", state: cliState });
   });
 
+  it("exposes Codex device login over RPC and the two-step CLI", async () => {
+    let holdTokenPoll = false;
+    let markTokenPollStarted: () => void = () => {};
+    const tokenPollStarted = new Promise<void>((resolve) => {
+      markTokenPollStarted = resolve;
+    });
+    let releaseTokenPoll: () => void = () => {};
+    const tokenPollRelease = new Promise<void>((resolve) => {
+      releaseTokenPoll = resolve;
+    });
+    const auth = await startUpstream(async (request, response) => {
+      await readRequestBody(request);
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/api/accounts/deviceauth/usercode") {
+        response.end(
+          JSON.stringify({
+            device_auth_id: "device-secret",
+            user_code: "ABCD-1234",
+            interval: "1",
+            expires_in: 600,
+          }),
+        );
+        return;
+      }
+      if (request.url === "/api/accounts/deviceauth/token") {
+        if (holdTokenPoll) {
+          markTokenPollStarted();
+          await tokenPollRelease;
+        }
+        response.end(
+          JSON.stringify({
+            authorization_code: "authorization-secret",
+            code_challenge: "challenge-secret",
+            code_verifier: "verifier-secret",
+          }),
+        );
+        return;
+      }
+      if (request.url === "/oauth/token") {
+        response.end(
+          JSON.stringify({
+            access_token: testJwt({ exp: 2_000_000_000 }),
+            refresh_token: "refresh-secret",
+            id_token: testJwt({
+              email: "codex@example.com",
+              "https://api.openai.com/auth": {
+                chatgpt_account_id: "chatgpt-account-1",
+              },
+            }),
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end("{}");
+    });
+    cleanups.push(auth.close);
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-pool-codex-login-"));
+    const host = createFakePluginHost({
+      pluginId: "account-pool",
+      dataDir,
+      sdk: sdkStubs(),
+    });
+    await createAccountPoolPlugin({
+      codexAuthBaseUrl: auth.url,
+      usageUrl: "data:application/json,{}",
+    })(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+
+    const started = codexLoginStartSchema.parse(
+      await host.harness.behavior.callRpc("codexLogin.start", null),
+    );
+    expect(started).toMatchObject({
+      verificationUri: `${auth.url}/codex/device`,
+      userCode: "ABCD-1234",
+      intervalMs: 1_000,
+    });
+    expect(
+      codexLoginPollSchema.parse(
+        await host.harness.behavior.callRpc("codexLogin.poll", {
+          sessionId: started.sessionId,
+        }),
+      ),
+    ).toEqual({ status: "pending" });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const completed = codexLoginPollSchema.parse(
+      await host.harness.behavior.callRpc("codexLogin.poll", {
+        sessionId: started.sessionId,
+      }),
+    );
+    expect(completed).toMatchObject({
+      status: "complete",
+      account: {
+        provider: "codex",
+        codexAccountId: "chatgpt-account-1",
+        email: "codex@example.com",
+      },
+    });
+
+    const cliStarted = await host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "codex",
+      "--login",
+    ]);
+    expect(cliStarted).toMatchObject({
+      exitCode: 0,
+      stdout: expect.stringContaining("Open this URL to sign in to Codex:"),
+    });
+    expect(cliStarted.stdout).toContain("Enter this code: ABCD-1234");
+    expect(cliStarted.stdout).toContain("account login-poll --session");
+    const sessionId = cliStarted.stdout.match(/Session ID: ([0-9a-f-]+)/u)?.[1];
+    if (sessionId === undefined) {
+      throw new Error("Codex CLI login start omitted its session ID.");
+    }
+    const cliCompleted = await host.harness.behavior.runCli([
+      "account",
+      "login-poll",
+      "--session",
+      sessionId,
+    ]);
+    expect(cliCompleted).toMatchObject({
+      exitCode: 0,
+      stdout: expect.stringContaining("Added codex@example.com"),
+    });
+    const cancelledStart = await host.harness.behavior.runCli([
+      "account",
+      "add",
+      "--provider",
+      "codex",
+      "--login",
+    ]);
+    const cancelledSessionId = cancelledStart.stdout.match(
+      /Session ID: ([0-9a-f-]+)/u,
+    )?.[1];
+    if (cancelledSessionId === undefined) {
+      throw new Error("Codex CLI login start omitted its session ID.");
+    }
+    holdTokenPoll = true;
+    const controller = new AbortController();
+    const cancelledPoll = host.harness.behavior.runCli(
+      ["account", "login-poll", "--session", cancelledSessionId],
+      { signal: controller.signal },
+    );
+    await tokenPollStarted;
+    controller.abort(new Error("cancelled by test"));
+    expect(
+      codexLoginPollSchema.parse(
+        await host.harness.behavior.callRpc("codexLogin.poll", {
+          sessionId: cancelledSessionId,
+        }),
+      ),
+    ).toEqual({
+      status: "error",
+      message: "Login session was not found. Start again.",
+    });
+    releaseTokenPoll();
+    expect(await cancelledPoll).toMatchObject({ exitCode: 1 });
+    expect(host.harness.inspection.logEntries.join("\n")).not.toMatch(
+      /device-secret|ABCD-1234|authorization-secret|verifier-secret|refresh-secret/u,
+    );
+  });
+
   it("resolves distinct secret machine tokens and honors per-thread bypass", async () => {
     const upstream = await startUpstream(async (request, response) => {
       await readRequestBody(request);
@@ -1203,13 +1384,13 @@ describe("Account Pool plugin", () => {
       {
         name: "ANTHROPIC_BASE_URL",
         value: { serverPath: "/api/v1/plugins/account-pool/http" },
-        reason: "Routed through the Account Pool hub",
+        reason: "Routed through the Account Pooler hub",
         secret: false,
       },
       {
         name: "ANTHROPIC_AUTH_TOKEN",
         value: fixture.key,
-        reason: "Account Pool hub token for this machine",
+        reason: "Account Pooler hub token for this machine",
         secret: true,
       },
       {
@@ -1226,7 +1407,8 @@ describe("Account Pool plugin", () => {
       }),
     ).resolves.toEqual({
       label: "Proxied",
-      statusMessage: "Credentials are provided by the Account Pool hub.",
+      statusMessage:
+        "Credentials are provided by the Account Pooler hub.",
     });
     const secondToken = await resolveToken(
       fixture.host,
@@ -1403,7 +1585,7 @@ describe("Account Pool plugin", () => {
     expect(fixture.host.harness.inspection.logEntries).toContainEqual({
       level: "warn",
       message:
-        "Account Pool disabled with 1 recently routed thread on machines without a local Claude login. Run bb pool status before disabling to inspect them.",
+        "Account Pooler disabled with 1 recently routed thread on machines without a local Claude login. Run bb pool status before disabling to inspect them.",
     });
   });
 
@@ -1424,7 +1606,7 @@ describe("Account Pool plugin", () => {
     expect(fixture.host.harness.inspection.logEntries).toContainEqual({
       level: "debug",
       message:
-        "Account Pool disable inspection skipped: plugin list unavailable",
+        "Account Pooler disable inspection skipped: plugin list unavailable",
     });
   });
 
@@ -1451,7 +1633,7 @@ describe("Account Pool plugin", () => {
     );
     expect(fixture.host.harness.inspection.logEntries).toContainEqual({
       level: "debug",
-      message: "Account Pool disable inspection timed out.",
+      message: "Account Pooler disable inspection timed out.",
     });
   });
 
@@ -2211,7 +2393,7 @@ describe("Account Pool plugin", () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
     const stopped = await reader.read();
     expect(new TextDecoder().decode(stopped.value)).toContain(
-      "Account Pool stopped",
+      "Account Pooler stopped",
     );
     const rejected = await fixture.host.harness.behavior.fetchHttp(
       "POST",

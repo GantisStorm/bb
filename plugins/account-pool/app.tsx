@@ -25,6 +25,14 @@ interface LoginStep {
   authorizeUrl: string;
 }
 
+interface CodexLoginStep {
+  sessionId: string;
+  verificationUri: string;
+  userCode: string;
+  expiresAt: number;
+  intervalMs: number;
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -42,9 +50,13 @@ function AccountPoolSettings() {
   const navigate = useBbNavigate();
   const [accounts, setAccounts] = useState<AccountSummary[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [codexLoading, setCodexLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loginStep, setLoginStep] = useState<LoginStep | null>(null);
+  const [codexLoginStep, setCodexLoginStep] = useState<CodexLoginStep | null>(
+    null,
+  );
+  const [codexLoginError, setCodexLoginError] = useState<string | null>(null);
+  const [codexLoginPending, setCodexLoginPending] = useState(false);
   const [pastedCode, setPastedCode] = useState("");
   const [loginPending, setLoginPending] = useState(false);
   const [removeAccount, setRemoveAccount] = useState<AccountSummary | null>(
@@ -79,6 +91,37 @@ function AccountPoolSettings() {
   useRealtime(ACCOUNT_POOL_ACCOUNTS_CHANGED, () => {
     void refresh();
   });
+
+  useEffect(() => {
+    if (codexLoginStep === null || codexLoginError !== null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const result = await rpc.call("codexLogin.poll", {
+          sessionId: codexLoginStep.sessionId,
+        });
+        if (cancelled) return;
+        if (result.status === "complete") {
+          setCodexLoginStep(null);
+          await refresh();
+          return;
+        }
+        if (result.status === "error") {
+          setCodexLoginError(result.message);
+          return;
+        }
+        timer = setTimeout(poll, codexLoginStep.intervalMs);
+      } catch (pollError) {
+        if (!cancelled) setCodexLoginError(errorText(pollError));
+      }
+    };
+    timer = setTimeout(poll, codexLoginStep.intervalMs);
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [codexLoginError, codexLoginStep, refresh, rpc]);
 
   const mutate = useCallback(
     async (action: () => Promise<void>) => {
@@ -129,6 +172,34 @@ function AccountPoolSettings() {
     }
   }
 
+  async function startCodexLogin(): Promise<void> {
+    if (codexLoginPending) return;
+    setCodexLoginPending(true);
+    setCodexLoginError(null);
+    setError(null);
+    try {
+      const started = await rpc.call("codexLogin.start", null);
+      setCodexLoginStep(started);
+      navigate.openUrl(started.verificationUri);
+    } catch (startError) {
+      setError(errorText(startError));
+    } finally {
+      setCodexLoginPending(false);
+    }
+  }
+
+  async function cancelCodexLogin(): Promise<void> {
+    if (codexLoginStep === null) return;
+    const sessionId = codexLoginStep.sessionId;
+    setCodexLoginStep(null);
+    setCodexLoginError(null);
+    try {
+      await rpc.call("codexLogin.cancel", { sessionId });
+    } catch (cancelError) {
+      setError(errorText(cancelError));
+    }
+  }
+
   async function importAccount(): Promise<void> {
     if (loading) return;
     setLoading(true);
@@ -141,20 +212,6 @@ function AccountPoolSettings() {
       });
     });
     setLoading(false);
-  }
-
-  async function importCodexAccount(): Promise<void> {
-    if (codexLoading) return;
-    setCodexLoading(true);
-    await mutate(async () => {
-      await rpc.call("account.add", {
-        provider: "codex",
-        source: { kind: "import" },
-        label: null,
-        priority: 100,
-      });
-    });
-    setCodexLoading(false);
   }
 
   async function addApiKey(): Promise<void> {
@@ -203,6 +260,14 @@ function AccountPoolSettings() {
     }
   }
 
+  async function copyCodexValue(value: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      setError("Copy failed. Select the value and copy it manually.");
+    }
+  }
+
   return (
     <div className="w-full space-y-5">
       <div>
@@ -210,7 +275,7 @@ function AccountPoolSettings() {
           Provider accounts
         </h3>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          Account Pool routes Claude and Codex threads through available
+          Account Pooler routes Claude and Codex threads through available
           accounts and moves away from accounts that reach their limits.
         </p>
       </div>
@@ -285,36 +350,7 @@ function AccountPoolSettings() {
         </div>
       )}
 
-      {loginStep === null ? (
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" disabled={loginPending} onClick={startLogin}>
-            {loginPending ? "Starting…" : "Sign in to Claude"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={loading}
-            onClick={() => void importAccount()}
-          >
-            {loading ? "Importing…" : "Import Claude from this machine"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={codexLoading}
-            onClick={() => void importCodexAccount()}
-          >
-            {codexLoading ? "Importing…" : "Import Codex from this machine"}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setApiKeyOpen(true)}
-          >
-            Add API key
-          </Button>
-        </div>
-      ) : (
+      {loginStep !== null ? (
         <div className="space-y-3 rounded-md border border-border/60 px-4 py-4">
           <div>
             <p className="text-sm font-medium text-foreground">
@@ -371,6 +407,115 @@ function AccountPoolSettings() {
               Cancel
             </Button>
           </div>
+        </div>
+      ) : codexLoginStep !== null ? (
+        <div className="space-y-3 rounded-md border border-border/60 px-4 py-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              Finish signing in to Codex
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Open the verification page, sign in to ChatGPT, and enter this
+              one-time code.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              readOnly
+              value={codexLoginStep.verificationUri}
+              aria-label="Codex verification URL"
+              className="font-mono text-xs"
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void copyCodexValue(codexLoginStep.verificationUri)
+              }
+            >
+              Copy URL
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => navigate.openUrl(codexLoginStep.verificationUri)}
+            >
+              Open
+            </Button>
+          </div>
+          <div className="flex items-center gap-3 rounded-md bg-surface-recessed px-3 py-3">
+            <code
+              aria-label="Codex user code"
+              className="select-all font-mono text-lg font-semibold tracking-wider text-foreground"
+            >
+              {codexLoginStep.userCode}
+            </code>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              onClick={() => void copyCodexValue(codexLoginStep.userCode)}
+            >
+              Copy code
+            </Button>
+          </div>
+          {codexLoginError === null ? (
+            <p className="text-sm text-muted-foreground" role="status">
+              Waiting for you to authorize…
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-destructive-text" role="alert">
+                {codexLoginError}
+              </p>
+              <Button
+                type="button"
+                onClick={() => {
+                  setCodexLoginStep(null);
+                  void startCodexLogin();
+                }}
+              >
+                Try again
+              </Button>
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => void cancelCodexLogin()}
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" disabled={loginPending} onClick={startLogin}>
+            {loginPending ? "Starting…" : "Sign in to Claude"}
+          </Button>
+          <Button
+            type="button"
+            disabled={codexLoginPending}
+            onClick={() => void startCodexLogin()}
+          >
+            {codexLoginPending ? "Starting…" : "Sign in to Codex"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={loading}
+            onClick={() => void importAccount()}
+          >
+            {loading ? "Importing…" : "Import Claude from this machine"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setApiKeyOpen(true)}
+          >
+            Add API key
+          </Button>
         </div>
       )}
 
@@ -432,7 +577,7 @@ function AccountPoolSettings() {
                 <DialogTitle>Add an Anthropic API key</DialogTitle>
                 <DialogDescription>
                   The key is sent directly to this bb server and stored in its
-                  protected Account Pool secret directory.
+                  protected Account Pooler secret directory.
                 </DialogDescription>
               </DialogHeader>
               <Input

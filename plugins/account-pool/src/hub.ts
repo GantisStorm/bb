@@ -7,7 +7,10 @@ import type {
   PoolStatus,
 } from "./contracts.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
-import { createCodexAdapter } from "./codex-adapter.js";
+import {
+  createCodexAdapter,
+  DEFAULT_CODEX_REFRESH_URL,
+} from "./codex-adapter.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import type { ImportedProviderAccount } from "./provider-adapter.js";
 import type {
@@ -24,7 +27,6 @@ import type { AccountStore, HubTokenStore, QuotaStore } from "./store.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
-const DEFAULT_CODEX_REFRESH_URL = "https://auth.openai.com/oauth/token";
 const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
@@ -106,7 +108,10 @@ export class AccountPoolHub {
   async handle(request: Request, provider: PoolProvider): Promise<Response> {
     const adapter = this.adapter(provider);
     if (!(await this.authenticate(request))) {
-      return adapter.errorResponse(401, "Invalid Account Pool bearer token.");
+      return adapter.errorResponse(
+        401,
+        "Invalid Account Pooler bearer token.",
+      );
     }
     return this.handleAuthenticated(request, provider);
   }
@@ -119,7 +124,7 @@ export class AccountPoolHub {
     if (!this.accepting)
       return adapter.errorResponse(
         503,
-        "Account Pool is not accepting requests.",
+        "Account Pooler is not accepting requests.",
       );
     return this.forward(
       request,
@@ -191,7 +196,7 @@ export class AccountPoolHub {
     for (const controller of this.activeControllers) {
       controller.abort(
         new Error(
-          "Account Pool stopped before the upstream response completed.",
+          "Account Pooler stopped before the upstream response completed.",
         ),
       );
     }
@@ -263,7 +268,7 @@ export class AccountPoolHub {
       } catch {
         return adapter.errorResponse(
           502,
-          `Account Pool could not reach ${adapter.upstreamName}.`,
+          `Account Pooler could not reach ${adapter.upstreamName}.`,
         );
       }
       const observed = adapter.quotaFromHeaders(
@@ -332,7 +337,7 @@ export class AccountPoolHub {
           } catch {
             return adapter.errorResponse(
               502,
-              `Account Pool could not reach ${adapter.upstreamName}.`,
+              `Account Pooler could not reach ${adapter.upstreamName}.`,
             );
           }
         }
@@ -534,7 +539,10 @@ export class AccountPoolHub {
     adapter: ProviderAdapter,
   ): Response {
     if (!accounts.some((account) => account.enabled)) {
-      return adapter.errorResponse(503, "Account Pool has no enabled account");
+      return adapter.errorResponse(
+        503,
+        "Account Pooler has no enabled account",
+      );
     }
     const now = this.options.now();
     const next = accounts
@@ -555,7 +563,7 @@ export class AccountPoolHub {
     );
     return adapter.errorResponse(
       429,
-      "No Account Pool account is currently eligible.",
+      "No Account Pooler account is currently eligible.",
       { "retry-after": String(retryAfter) },
     );
   }
@@ -568,7 +576,9 @@ export class AccountPoolHub {
   private adapter(provider: PoolProvider): ProviderAdapter {
     const adapter = this.options.adapters.get(provider);
     if (adapter === undefined)
-      throw new Error(`Missing ${provider} Account Pool adapter.`);
+      throw new Error(
+        `Missing ${provider} Account Pooler adapter.`,
+      );
     return adapter;
   }
 

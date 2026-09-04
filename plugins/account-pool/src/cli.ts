@@ -1,8 +1,10 @@
 import type { BbPluginApi, PluginCliResult } from "@get-bb/plugin-sdk";
+import { setTimeout as wait } from "node:timers/promises";
 import {
   accountAddInputSchema,
   accountIdInputSchema,
   bypassInputSchema,
+  codexLoginPollInputSchema,
   loginCompleteInputSchema,
   tokenRotateInputSchema,
   type AccountSummary,
@@ -12,6 +14,7 @@ import {
 } from "./contracts.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
+import type { CodexDeviceLogin } from "./codex-device-login.js";
 
 interface ParsedFlags {
   booleans: Set<string>;
@@ -23,6 +26,8 @@ const HELP = [
   "  bb pool account add --provider claude --import [--label <text>] [--priority <n>]",
   "  bb pool account add --provider codex --import [--label <text>] [--priority <n>]",
   "  bb pool account add --provider claude --login",
+  "  bb pool account add --provider codex --login",
+  "  bb pool account login-poll --session <id>",
   "  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
   "  bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]",
   "  bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]  Unsafe: exposes the key in process arguments.",
@@ -173,18 +178,24 @@ export function registerPoolCli(
   bb: Pick<BbPluginApi, "cli">,
   operations: PoolOperations,
   login: ClaudeOAuthLogin,
+  codexLogin: CodexDeviceLogin,
 ): void {
   bb.cli.register({
     name: "pool",
     summary:
-      "Manage Claude and Codex accounts and inspect the Account Pool hub",
+      "Manage Claude and Codex accounts and inspect the Account Pooler hub",
     commands: [
       {
         name: "account-add",
         summary:
-          "Sign in to Claude, import Claude or Codex credentials, or add an Anthropic API key",
+          "Sign in to Claude or Codex, import credentials, or add an Anthropic API key",
         usage:
-          "bb pool account add --provider claude --login\nbb pool account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]\nUnsafe compatibility form: bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]",
+          "bb pool account add --provider <claude|codex> --login\nbb pool account add --provider <claude|codex> --import [--label <text>] [--priority <n>]\nbb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]\nUnsafe compatibility form: bb pool account add --provider claude --api-key <key> [--label <text>] [--priority <n>]",
+      },
+      {
+        name: "account-login-poll",
+        summary: "Wait for a Codex device-code login to complete",
+        usage: "bb pool account login-poll --session <id>",
       },
       {
         name: "account-login-complete",
@@ -219,16 +230,17 @@ export function registerPoolCli(
       },
       {
         name: "token-rotate",
-        summary: "Rotate one machine's Account Pool bearer token",
+        summary:
+          "Rotate one machine's Account Pooler bearer token",
         usage: "bb pool token rotate --machine <id-or-name>",
       },
       {
         name: "bypass",
-        summary: "Bypass Account Pool routing for one thread",
+        summary: "Bypass Account Pooler routing for one thread",
         usage: "bb pool bypass <thread-id> [--off]",
       },
     ],
-    async run(argv): Promise<PluginCliResult> {
+    async run(argv, ctx): Promise<PluginCliResult> {
       try {
         if (argv.includes("--help") || argv.includes("-h")) {
           return { exitCode: 0, stdout: `${HELP}\n` };
@@ -253,11 +265,30 @@ export function registerPoolCli(
               "Choose exactly one of --login, --import, --api-key-stdin, or --api-key <key>.",
             );
           if (loginRequested) {
-            if (flags.values.get("provider") !== "claude") {
-              throw new Error("--login requires --provider claude.");
+            const provider = flags.values.get("provider");
+            if (provider !== "claude" && provider !== "codex") {
+              throw new Error(
+                "--login requires --provider claude or --provider codex.",
+              );
             }
             if (flags.values.has("label") || flags.values.has("priority")) {
               throw new Error("--login does not accept --label or --priority.");
+            }
+            if (provider === "codex") {
+              const started = await codexLogin.start();
+              return {
+                exitCode: 0,
+                stdout: `${[
+                  "Open this URL to sign in to Codex:",
+                  started.verificationUri,
+                  "",
+                  `Enter this code: ${started.userCode}`,
+                  `Session ID: ${started.sessionId}`,
+                  "",
+                  "After authorizing, wait for the account to be added with:",
+                  `bb pool account login-poll --session ${started.sessionId}`,
+                ].join("\n")}\n`,
+              };
             }
             const started = login.start();
             return {
@@ -293,6 +324,46 @@ export function registerPoolCli(
             exitCode: 0,
             stdout: `Added ${account.label} (${account.id}).\n`,
           };
+        }
+        if (argv[0] === "account" && argv[1] === "login-poll") {
+          const flags = parseFlags(argv.slice(2), [], ["session"]);
+          const input = codexLoginPollInputSchema.parse({
+            sessionId: flags.values.get("session"),
+          });
+          const signal = ctx.signal;
+          const cancel = () => codexLogin.cancel(input);
+          signal?.addEventListener("abort", cancel, { once: true });
+          try {
+            if (signal?.aborted) {
+              cancel();
+              throw signal.reason ?? new Error("Codex login was cancelled.");
+            }
+            while (true) {
+              await wait(
+                codexLogin.nextPollDelayMs(input.sessionId),
+                undefined,
+                { signal },
+              );
+              const result = await codexLogin.poll(input);
+              if (signal?.aborted) {
+                throw signal.reason ?? new Error("Codex login was cancelled.");
+              }
+              if (result.status === "complete") {
+                return {
+                  exitCode: 0,
+                  stdout: `Added ${result.account.label} (${result.account.id}).\n`,
+                };
+              }
+              if (result.status === "error") {
+                throw new Error(result.message);
+              }
+            }
+          } catch (error) {
+            if (signal?.aborted) codexLogin.cancel(input);
+            throw error;
+          } finally {
+            signal?.removeEventListener("abort", cancel);
+          }
         }
         if (argv[0] === "account" && argv[1] === "login-complete") {
           const flags = parseFlags(
@@ -365,7 +436,7 @@ export function registerPoolCli(
           const token = await operations.rotateToken(machine);
           return {
             exitCode: 0,
-            stdout: `Rotated the Account Pool token for ${token.hostName ?? token.hostId}.\n`,
+            stdout: `Rotated the Account Pooler token for ${token.hostName ?? token.hostId}.\n`,
           };
         }
         if (argv[0] === "bypass") {
@@ -382,7 +453,7 @@ export function registerPoolCli(
           );
           return {
             exitCode: 0,
-            stdout: `${result.bypassed ? "Enabled" : "Disabled"} Account Pool bypass for ${result.threadId}.\n`,
+            stdout: `${result.bypassed ? "Enabled" : "Disabled"} Account Pooler bypass for ${result.threadId}.\n`,
           };
         }
         throw new Error(HELP);

@@ -23,7 +23,7 @@ The builtin Custom instructions plugin adds a multiline editor under Settings
 → Custom instructions. Saved text is persisted on this bb host and included in
 agent task instructions; blank text contributes nothing.
 
-The builtin Account Pool plugin is disabled on fresh installations. It stores
+The builtin Account Pooler plugin is disabled on fresh installations. It stores
 Claude and Codex account tokens in per-account 0600 secret files and proxies
 provider API requests through the bb server. Enable it and add an account:
 
@@ -44,13 +44,15 @@ bb pool token rotate --machine <id-or-name>
 bb pool bypass <thread-id> [--off]
 ```
 
-`--login` starts a ten-minute in-memory PKCE session, prints the Claude browser
+Claude `--login` starts a ten-minute in-memory PKCE session, prints the browser
 sign-in URL and session ID, then exits. After sign-in, pipe the manual callback
 code to `account login-complete` with that session ID. The browser does not need
 to run on the bb server machine, and neither the code nor account tokens enter
-process arguments. The same flow is available in the plugin settings page
-through the **Sign in to Claude** button. Codex import reads the bb server
-host's `~/.codex/auth.json` and has no browser sign-in flow.
+process arguments. Codex `--login` prints a device verification URL, one-time
+code, session ID, and an `account login-poll` command that waits for
+authorization. Both flows are available in the plugin settings page through
+the **Sign in to Claude** and **Sign in to Codex** buttons. The CLI Codex import
+path continues to read the bb server host's `~/.codex/auth.json`.
 
 The hub starts immediately, even before an account is configured, so newly
 added or enabled accounts are available without a plugin reload. With an
