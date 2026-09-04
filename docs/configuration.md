@@ -611,6 +611,44 @@ how many connected clients received the broadcast. `spotlight` focuses the
 target pane and persistently dims the others; `clear-spotlight` focuses it and
 persistently restores undimmed splits.
 
+## Account Pool
+
+The builtin Account Pool plugin is disabled on fresh installations. It stores
+non-secret Claude account metadata in plugin KV, quota observations in the
+plugin SQLite database, and each account token plus the generated hub bearer
+key in 0600 files under `<data-dir>/plugins/account-pool/secrets/accounts/`.
+Enable it and add at least one account:
+
+```sh
+bb plugin enable account-pool
+bb pool account add --provider claude --import
+printf '%s\n' "$ANTHROPIC_API_KEY" | bb pool account add --provider claude --api-key-stdin [--label <text>] [--priority <n>]
+```
+
+The import path reads the Claude Code login on the bb server host.
+`--api-key-stdin` reads exactly one non-empty key from piped standard input and
+is the default API-key path for agents. The compatibility form `--api-key
+<key>` remains available, but exposes the secret in process arguments, shell
+history, and agent transcripts. The hub starts immediately, so a newly added
+or enabled account is available without a plugin reload.
+
+`bb pool status --show-key` is the only command that reveals the hub bearer
+key. Point a client at the route printed by that command and supply the key as
+`Authorization: Bearer <key>`. Account listing, enable, disable, and removal
+are available through `bb pool account list|enable|disable|remove`.
+JSON account status includes rejected upstream bucket resets under
+`bucketExhaustion`. The field is diagnostic and does not affect selection.
+
+Two settings control routing. `switchThreshold` is the 5-hour or 7-day quota
+fraction at which an account stops receiving traffic and defaults to `0.98`.
+`upstreamBaseUrl` defaults to `https://api.anthropic.com` and exists only for
+tests and QA with a controlled fake upstream:
+
+```sh
+bb plugin config account-pool set switchThreshold 0.98
+bb plugin config account-pool set upstreamBaseUrl http://127.0.0.1:9000
+```
+
 ## bb connect
 
 `bb connect --code <code> --server https://<handle>.getbb.app` pairs this bb
