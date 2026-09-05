@@ -142,6 +142,7 @@ function BrowserTabStage({ tab, threadId, width }: BrowserTabStageProps) {
             activeBrowserTabId={activeBrowserTabId}
             canShowNativeBrowserView
             threadId={threadId}
+            projectId="proj_browser_story"
             environmentId={null}
             onUpdate={noop}
           />

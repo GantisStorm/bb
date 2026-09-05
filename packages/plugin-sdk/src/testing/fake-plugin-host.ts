@@ -56,6 +56,7 @@ import type {
   PluginAgentToolResult,
   PluginAgents,
   PluginBackground,
+  PluginBrowser,
   PluginCli,
   PluginCliCommandInfo,
   PluginCliContext,
@@ -2081,6 +2082,14 @@ function createFakePluginHostInternal(
     },
   };
 
+  const browser: PluginBrowser = {
+    listTabs: () => [],
+    listOwners: () => [],
+    openTab: () =>
+      Promise.reject(new Error("Browser tab creation is unavailable in tests")),
+    run: () =>
+      Promise.reject(new Error("Browser control is unavailable in tests")),
+  };
   const experimental_hooks: PluginHooks = {
     on(hook, handler) {
       if (hooks[hook] !== null) {
@@ -2097,7 +2106,6 @@ function createFakePluginHostInternal(
       requestedDrains += 1;
     },
   };
-
   const bb: BbPluginApi = {
     pluginId,
     log,
@@ -2107,6 +2115,7 @@ function createFakePluginHostInternal(
     rpc,
     realtime,
     background,
+    experimental_browser: browser,
     cli,
     agents,
     providers,

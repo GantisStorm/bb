@@ -9,6 +9,11 @@ import {
   threadRuntimeStateSchema,
   threadStatusSchema,
 } from "./thread.js";
+import {
+  browserClientStateMessageSchema,
+  browserControlResponseMessageSchema,
+  browserOpenTabResponseMessageSchema,
+} from "./browser-control.js";
 
 export const THREAD_CHANGE_KINDS = [
   "thread-created",
@@ -146,6 +151,9 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   subscribeMessageSchema,
   unsubscribeMessageSchema,
   pingMessageSchema,
+  browserClientStateMessageSchema,
+  browserControlResponseMessageSchema,
+  browserOpenTabResponseMessageSchema,
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 

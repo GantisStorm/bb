@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
   type RealtimeSubscriptionTarget,
@@ -10,6 +11,7 @@ import {
   type ThreadChangeKind,
   type ThreadChangeMetadata,
   type ThreadEventType,
+  type JsonValue,
 } from "@bb/domain";
 import type { DbNotifier } from "@bb/db";
 import type {
@@ -21,6 +23,17 @@ import type {
 } from "@bb/host-daemon-contract";
 import {
   pluginSignalSchema,
+  browserActionabilityPolicySchema,
+  browserControlRequestMessageSchema,
+  browserOpenTabRequestMessageSchema,
+  type BrowserClientStateMessage,
+  type BrowserControlAction,
+  type BrowserControlError,
+  type BrowserControlResponseMessage,
+  type BrowserOpenTabResponseMessage,
+  type BrowserTabDescriptor,
+  type BrowserTabOwnerDescriptor,
+  type BrowserTabTarget,
   serverMessageSchema,
   terminalServerMessageSchema,
   threadOpenSignalSchema,
@@ -136,7 +149,73 @@ interface HostOnlineRpcWaiter {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-interface RecordHostOnlineRpcResponseArgs {
+interface BrowserClientRegistration {
+  active: boolean;
+  canActivateThreadOwner: boolean;
+  clientId: string;
+  windowId: string;
+  socket: HubSocket;
+  tabs: Map<string, BrowserTabDescriptor>;
+  owners: Map<string, BrowserTabOwnerDescriptor>;
+}
+
+interface BrowserControlWaiter {
+  allowsTargetDisappearance: boolean;
+  target: BrowserTabTarget;
+  socket: HubSocket;
+  resolve(value: JsonValue): void;
+  reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
+  unlinkAbort: () => void;
+}
+
+type BrowserOpenTabBinding =
+  | { kind: "owner"; owner: BrowserTabOwnerDescriptor }
+  | {
+      kind: "thread";
+      clientId: string;
+      windowId: string;
+      threadId: string;
+      projectId: string;
+    };
+
+interface BrowserOpenTabWaiter {
+  binding: BrowserOpenTabBinding;
+  socket: HubSocket;
+  resolve(target: BrowserTabTarget): void;
+  reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
+  unlinkAbort: () => void;
+}
+
+export class BrowserControlUnavailableError extends Error {
+  constructor(message = "The target Browser tab is not connected") {
+    super(message);
+    this.name = "BrowserControlUnavailableError";
+  }
+}
+export class BrowserControlRemoteError extends Error {
+  readonly code: string;
+  readonly details: JsonValue | undefined;
+
+  constructor(error: BrowserControlError) {
+    super(error.message);
+    this.name = error.code;
+    this.code = error.code;
+    this.details = error.details;
+  }
+}
+
+export class BrowserControlTargetChangedError extends Error {
+  constructor() {
+    super(
+      "The target Browser tab navigated or changed before the action completed",
+    );
+    this.name = "BrowserControlTargetChangedError";
+  }
+}
+
+export interface RecordHostOnlineRpcResponseArgs {
   message: HostDaemonOnlineRpcResponseMessage;
   sessionId: string;
 }
@@ -167,6 +246,22 @@ export class HostOnlineRpcUnavailableError extends Error {
 export class NotificationHub implements DbNotifier {
   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
+  private readonly browserClientsBySocket = new Map<
+    HubSocket,
+    BrowserClientRegistration
+  >();
+  private readonly browserClientsById = new Map<
+    string,
+    BrowserClientRegistration
+  >();
+  private readonly browserControlWaiters = new Map<
+    string,
+    BrowserControlWaiter
+  >();
+  private readonly browserOpenTabWaiters = new Map<
+    string,
+    BrowserOpenTabWaiter
+  >();
   private readonly daemonSessions = new Map<
     string,
     {
@@ -233,6 +328,7 @@ export class NotificationHub implements DbNotifier {
 
   unregisterClient(socket: HubSocket): void {
     this.unregisterTerminalClientSocket(socket);
+    this.unregisterBrowserClient(socket);
     const keys = this.clientKeysBySocket.get(socket);
     if (!keys) {
       return;
@@ -250,6 +346,509 @@ export class NotificationHub implements DbNotifier {
     }
 
     this.clientKeysBySocket.delete(socket);
+  }
+
+  updateBrowserClient(
+    socket: HubSocket,
+    message: BrowserClientStateMessage,
+  ): void {
+    this.registerClient(socket);
+    const existingForId = this.browserClientsById.get(message.clientId);
+    if (existingForId !== undefined && existingForId.socket !== socket) {
+      this.unregisterBrowserClient(existingForId.socket);
+    }
+    const previous = this.browserClientsBySocket.get(socket);
+    if (previous !== undefined && previous.clientId !== message.clientId) {
+      this.unregisterBrowserClient(socket);
+    }
+    const tabs = new Map(
+      message.tabs.map((tab) => [
+        tab.tabId,
+        {
+          ...tab,
+          clientId: message.clientId,
+          windowId: message.windowId,
+        },
+      ]),
+    );
+    const owners = new Map(
+      message.owners.map((owner) => [
+        owner.ownerId,
+        {
+          ...owner,
+          clientId: message.clientId,
+          windowId: message.windowId,
+        },
+      ]),
+    );
+    const registration: BrowserClientRegistration = {
+      active: message.active,
+      canActivateThreadOwner: message.canActivateThreadOwner,
+      clientId: message.clientId,
+      windowId: message.windowId,
+      socket,
+      owners,
+      tabs,
+    };
+    this.browserClientsBySocket.set(socket, registration);
+    this.browserClientsById.set(message.clientId, registration);
+
+    for (const [requestId, waiter] of this.browserControlWaiters) {
+      if (waiter.socket !== socket) continue;
+      if (waiter.allowsTargetDisappearance) continue;
+      const tab = tabs.get(waiter.target.tabId);
+      if (
+        tab === undefined ||
+        tab.windowId !== waiter.target.windowId ||
+        tab.navigationEpoch !== waiter.target.navigationEpoch
+      ) {
+        this.rejectBrowserControlWaiter(
+          requestId,
+          waiter,
+          new BrowserControlTargetChangedError(),
+        );
+      }
+    }
+    for (const [requestId, waiter] of this.browserOpenTabWaiters) {
+      if (waiter.socket !== socket || waiter.binding.kind !== "owner") continue;
+      const owner = owners.get(waiter.binding.owner.ownerId);
+      if (
+        owner === undefined ||
+        owner.clientId !== waiter.binding.owner.clientId ||
+        owner.windowId !== waiter.binding.owner.windowId
+      ) {
+        this.rejectBrowserOpenTabWaiter(
+          requestId,
+          waiter,
+          new BrowserControlUnavailableError(
+            "The selected Browser panel owner is no longer available",
+          ),
+        );
+      }
+    }
+  }
+
+  listBrowserTabs(): BrowserTabDescriptor[] {
+    return [...this.browserClientsById.values()]
+      .flatMap((registration) => [...registration.tabs.values()])
+      .sort((a, b) =>
+        [a.clientId, a.windowId, a.tabId]
+          .join("\u0000")
+          .localeCompare([b.clientId, b.windowId, b.tabId].join("\u0000")),
+      );
+  }
+
+  listBrowserTabOwners(): BrowserTabOwnerDescriptor[] {
+    return [...this.browserClientsById.values()]
+      .flatMap((registration) => [...registration.owners.values()])
+      .sort((a, b) =>
+        [a.clientId, a.windowId, a.ownerId]
+          .join("\u0000")
+          .localeCompare([b.clientId, b.windowId, b.ownerId].join("\u0000")),
+      );
+  }
+
+  openBrowserTab(args: {
+    url: string;
+    clientId?: string;
+    windowId?: string;
+    ownerId?: string;
+    threadId?: string;
+    projectId?: string;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<BrowserTabTarget> {
+    const matches = this.listBrowserTabOwners().filter(
+      (owner) =>
+        (args.clientId === undefined || owner.clientId === args.clientId) &&
+        (args.windowId === undefined || owner.windowId === args.windowId) &&
+        (args.ownerId === undefined || owner.ownerId === args.ownerId) &&
+        (args.threadId === undefined || owner.threadId === args.threadId) &&
+        (args.projectId === undefined || owner.projectId === args.projectId),
+    );
+    const activeMatches = matches.filter((owner) => owner.active);
+    const candidates = activeMatches.length > 0 ? activeMatches : matches;
+    let binding: BrowserOpenTabBinding;
+    let registration: BrowserClientRegistration | undefined;
+    if (candidates.length > 1) {
+      return Promise.reject(
+        new BrowserControlUnavailableError(
+          "Multiple visible BB Browser panel owners match; specify client, window, or owner",
+        ),
+      );
+    }
+    const owner = candidates[0];
+    if (owner !== undefined) {
+      registration = this.browserClientsById.get(owner.clientId);
+      if (
+        registration === undefined ||
+        registration.windowId !== owner.windowId ||
+        registration.owners.get(owner.ownerId) !== owner
+      ) {
+        return Promise.reject(new BrowserControlUnavailableError());
+      }
+      binding = { kind: "owner", owner };
+    } else {
+      if (
+        args.ownerId !== undefined ||
+        args.threadId === undefined ||
+        args.projectId === undefined
+      ) {
+        return Promise.reject(
+          new BrowserControlUnavailableError(
+            "No visible BB Browser panel owner matches this request",
+          ),
+        );
+      }
+      const activationCandidates = [...this.browserClientsById.values()].filter(
+        (candidate) =>
+          candidate.active &&
+          candidate.canActivateThreadOwner &&
+          (args.clientId === undefined ||
+            candidate.clientId === args.clientId) &&
+          (args.windowId === undefined || candidate.windowId === args.windowId),
+      );
+      if (activationCandidates.length === 0) {
+        return Promise.reject(
+          new BrowserControlUnavailableError(
+            "No active visible BB app can open a Browser for this thread",
+          ),
+        );
+      }
+      if (activationCandidates.length > 1) {
+        return Promise.reject(
+          new BrowserControlUnavailableError(
+            "Multiple active BB app windows can open this thread; specify client and window",
+          ),
+        );
+      }
+      registration = activationCandidates[0];
+      if (registration === undefined) {
+        return Promise.reject(new BrowserControlUnavailableError());
+      }
+      binding = {
+        kind: "thread",
+        clientId: registration.clientId,
+        windowId: registration.windowId,
+        threadId: args.threadId,
+        projectId: args.projectId,
+      };
+    }
+    if (args.signal?.aborted === true) {
+      return Promise.reject(
+        new DOMException("Browser tab creation was cancelled", "AbortError"),
+      );
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        const waiter = this.browserOpenTabWaiters.get(requestId);
+        if (waiter === undefined) return;
+        this.sendBrowserControlCancel(waiter.socket, requestId, "cancelled");
+        this.rejectBrowserOpenTabWaiter(
+          requestId,
+          waiter,
+          new DOMException("Browser tab creation was cancelled", "AbortError"),
+        );
+      };
+      args.signal?.addEventListener("abort", abort, { once: true });
+      const waiter: BrowserOpenTabWaiter = {
+        binding,
+        socket: registration.socket,
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          const current = this.browserOpenTabWaiters.get(requestId);
+          if (current === undefined) return;
+          this.sendBrowserControlCancel(current.socket, requestId, "timeout");
+          this.rejectBrowserOpenTabWaiter(
+            requestId,
+            current,
+            new Error("Timed out waiting for Browser tab creation"),
+          );
+        }, args.timeoutMs),
+        unlinkAbort: () => args.signal?.removeEventListener("abort", abort),
+      };
+      this.browserOpenTabWaiters.set(requestId, waiter);
+      const request =
+        binding.kind === "owner"
+          ? {
+              type: "browser-open-tab-request" as const,
+              mode: "owner" as const,
+              requestId,
+              clientId: binding.owner.clientId,
+              windowId: binding.owner.windowId,
+              ownerId: binding.owner.ownerId,
+              url: args.url,
+            }
+          : {
+              type: "browser-open-tab-request" as const,
+              mode: "thread" as const,
+              requestId,
+              clientId: binding.clientId,
+              windowId: binding.windowId,
+              threadId: binding.threadId,
+              projectId: binding.projectId,
+              url: args.url,
+            };
+      try {
+        registration.socket.send(
+          JSON.stringify(browserOpenTabRequestMessageSchema.parse(request)),
+        );
+      } catch {
+        this.rejectBrowserOpenTabWaiter(
+          requestId,
+          waiter,
+          new BrowserControlUnavailableError(),
+        );
+      }
+    });
+  }
+
+  runBrowserControl(args: {
+    target: BrowserTabTarget;
+    action: BrowserControlAction;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<JsonValue> {
+    const registration = this.browserClientsById.get(args.target.clientId);
+    const tab = registration?.tabs.get(args.target.tabId);
+    if (
+      registration === undefined ||
+      tab === undefined ||
+      registration.windowId !== args.target.windowId ||
+      tab.navigationEpoch !== args.target.navigationEpoch
+    ) {
+      return Promise.reject(new BrowserControlUnavailableError());
+    }
+    if (args.signal?.aborted === true) {
+      return Promise.reject(
+        new DOMException("Browser action was cancelled", "AbortError"),
+      );
+    }
+    const actionabilityPolicy = browserActionabilityPolicySchema.parse({
+      timeoutMs: args.timeoutMs,
+      pollIntervalMs: Math.min(
+        250,
+        Math.max(16, Math.floor(args.timeoutMs / 20)),
+      ),
+      stableFrameCount: 2,
+    });
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        const waiter = this.browserControlWaiters.get(requestId);
+        if (waiter === undefined) return;
+        this.sendBrowserControlCancel(waiter.socket, requestId, "cancelled");
+        this.rejectBrowserControlWaiter(
+          requestId,
+          waiter,
+          new DOMException("Browser action was cancelled", "AbortError"),
+        );
+      };
+      args.signal?.addEventListener("abort", abort, { once: true });
+      const waiter: BrowserControlWaiter = {
+        allowsTargetDisappearance:
+          args.action.kind === "activate-tab" ||
+          args.action.kind === "open-tab" ||
+          args.action.kind === "close-tab",
+        target: args.target,
+        socket: registration.socket,
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          const current = this.browserControlWaiters.get(requestId);
+          if (current === undefined) return;
+          this.sendBrowserControlCancel(current.socket, requestId, "timeout");
+          this.rejectBrowserControlWaiter(
+            requestId,
+            current,
+            new Error("Timed out waiting for Browser action"),
+          );
+        }, args.timeoutMs),
+        unlinkAbort: () => args.signal?.removeEventListener("abort", abort),
+      };
+      this.browserControlWaiters.set(requestId, waiter);
+      try {
+        registration.socket.send(
+          JSON.stringify(
+            browserControlRequestMessageSchema.parse({
+              type: "browser-control-request",
+              requestId,
+              target: args.target,
+              action: args.action,
+              actionabilityPolicy,
+            }),
+          ),
+        );
+      } catch {
+        this.rejectBrowserControlWaiter(
+          requestId,
+          waiter,
+          new BrowserControlUnavailableError(),
+        );
+      }
+    });
+  }
+
+  recordBrowserControlResponse(
+    socket: HubSocket,
+    message: BrowserControlResponseMessage,
+  ): boolean {
+    const waiter = this.browserControlWaiters.get(message.requestId);
+    if (waiter === undefined || waiter.socket !== socket) return false;
+    if (
+      message.target.clientId !== waiter.target.clientId ||
+      message.target.windowId !== waiter.target.windowId ||
+      message.target.tabId !== waiter.target.tabId ||
+      message.target.navigationEpoch !== waiter.target.navigationEpoch
+    ) {
+      return false;
+    }
+    this.deleteBrowserControlWaiter(message.requestId, waiter);
+    if (message.ok) waiter.resolve(message.value ?? null);
+    else {
+      const error = message.error ?? {
+        code: "BrowserControlError",
+        message: "Browser action failed",
+      };
+      waiter.reject(new BrowserControlRemoteError(error));
+    }
+    return true;
+  }
+
+  recordBrowserOpenTabResponse(
+    socket: HubSocket,
+    message: BrowserOpenTabResponseMessage,
+  ): boolean {
+    const waiter = this.browserOpenTabWaiters.get(message.requestId);
+    if (waiter === undefined || waiter.socket !== socket) return false;
+    const binding = waiter.binding;
+    if (
+      message.clientId !==
+        (binding.kind === "owner"
+          ? binding.owner.clientId
+          : binding.clientId) ||
+      message.windowId !==
+        (binding.kind === "owner"
+          ? binding.owner.windowId
+          : binding.windowId) ||
+      (binding.kind === "owner" && message.ownerId !== binding.owner.ownerId)
+    ) {
+      return false;
+    }
+    if (message.ok && message.target !== undefined) {
+      const registration = this.browserClientsById.get(message.clientId);
+      const owner = registration?.owners.get(message.ownerId);
+      const tab = registration?.tabs.get(message.target.tabId);
+      const expectedThreadId =
+        binding.kind === "owner" ? binding.owner.threadId : binding.threadId;
+      const expectedProjectId =
+        binding.kind === "owner" ? binding.owner.projectId : binding.projectId;
+      if (
+        registration === undefined ||
+        registration.socket !== socket ||
+        registration.windowId !== message.windowId ||
+        owner === undefined ||
+        owner.threadId !== expectedThreadId ||
+        owner.projectId !== expectedProjectId ||
+        tab === undefined ||
+        tab.threadId !== expectedThreadId ||
+        tab.projectId !== expectedProjectId ||
+        message.target.clientId !== message.clientId ||
+        message.target.windowId !== message.windowId
+      ) {
+        return false;
+      }
+    }
+    this.deleteBrowserOpenTabWaiter(message.requestId, waiter);
+    if (message.ok && message.target !== undefined) {
+      waiter.resolve(message.target);
+    } else {
+      const error = new Error(
+        message.error?.message ?? "Browser tab creation failed",
+      );
+      error.name = message.error?.code ?? "BrowserOpenTabError";
+      waiter.reject(error);
+    }
+    return true;
+  }
+
+  private unregisterBrowserClient(socket: HubSocket): void {
+    const registration = this.browserClientsBySocket.get(socket);
+    if (registration === undefined) return;
+    this.browserClientsBySocket.delete(socket);
+    if (this.browserClientsById.get(registration.clientId) === registration) {
+      this.browserClientsById.delete(registration.clientId);
+    }
+    for (const [requestId, waiter] of this.browserControlWaiters) {
+      if (waiter.socket !== socket) continue;
+      this.rejectBrowserControlWaiter(
+        requestId,
+        waiter,
+        new BrowserControlUnavailableError("The Browser client disconnected"),
+      );
+    }
+    for (const [requestId, waiter] of this.browserOpenTabWaiters) {
+      if (waiter.socket !== socket) continue;
+      this.rejectBrowserOpenTabWaiter(
+        requestId,
+        waiter,
+        new BrowserControlUnavailableError("The Browser client disconnected"),
+      );
+    }
+  }
+
+  private sendBrowserControlCancel(
+    socket: HubSocket,
+    requestId: string,
+    reason: "cancelled" | "timeout" | "client-disconnected",
+  ): void {
+    try {
+      socket.send(
+        JSON.stringify({ type: "browser-control-cancel", requestId, reason }),
+      );
+    } catch {
+      // The waiter is rejected locally below; a disconnected client needs no message.
+    }
+  }
+
+  private rejectBrowserOpenTabWaiter(
+    requestId: string,
+    waiter: BrowserOpenTabWaiter,
+    error: Error,
+  ): void {
+    this.deleteBrowserOpenTabWaiter(requestId, waiter);
+    waiter.reject(error);
+  }
+
+  private deleteBrowserOpenTabWaiter(
+    requestId: string,
+    waiter: BrowserOpenTabWaiter,
+  ): void {
+    if (this.browserOpenTabWaiters.get(requestId) !== waiter) return;
+    this.browserOpenTabWaiters.delete(requestId);
+    clearTimeout(waiter.timeout);
+    waiter.unlinkAbort();
+  }
+
+  private rejectBrowserControlWaiter(
+    requestId: string,
+    waiter: BrowserControlWaiter,
+    error: Error,
+  ): void {
+    this.deleteBrowserControlWaiter(requestId, waiter);
+    waiter.reject(error);
+  }
+
+  private deleteBrowserControlWaiter(
+    requestId: string,
+    waiter: BrowserControlWaiter,
+  ): void {
+    if (this.browserControlWaiters.get(requestId) !== waiter) return;
+    this.browserControlWaiters.delete(requestId);
+    clearTimeout(waiter.timeout);
+    waiter.unlinkAbort();
   }
 
   onChangedMessage(listener: ChangedMessageListener): () => void {

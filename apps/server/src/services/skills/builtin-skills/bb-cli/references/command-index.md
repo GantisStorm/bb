@@ -6,6 +6,15 @@ This index lists every command path that the core CLI registers. Read the task-s
 
 - `bb status`
 
+## browser
+
+- `bb browser`
+- `bb browser list`
+- `bb browser open`
+- `bb browser run`
+- `bb browser batch`
+- `bb browser wait`
+
 ## settings
 
 - `bb settings`

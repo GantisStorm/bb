@@ -151,6 +151,25 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         experimental: true,
       },
       {
+        id: "browser-actions",
+        title: "Browser tab controls",
+        summary:
+          "Adds a compact control to the navigation chrome of bb's visible Browser tab. With this, a plugin can:",
+        bullets: [
+          "Receive the exact tab, thread, project, URL, and navigation revision currently on screen",
+          "Run a bounded page script or capture that same tab without opening a separate browser session",
+          "Lease the Browser overlay while its own dialog or menu is open",
+        ],
+        apiSymbols: [
+          "ExperimentalBrowserPageCapture",
+          "ExperimentalBrowserPageContentScriptRequest",
+          "ExperimentalBrowserPageContentScriptResult",
+          "PluginBrowserActionRegistration",
+          "PluginBrowserActionProps",
+        ],
+        experimental: true,
+      },
+      {
         id: "timeline-renderers",
         title: "Timeline entry content",
         summary:
@@ -542,7 +561,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
     sections: [
       {
         title: "Commands & agent capabilities",
-        surfaceIds: ["cli", "agent-tools"],
+        surfaceIds: ["cli", "agent-tools", "browser-agent-control"],
       },
       {
         title: "Running & reacting",
@@ -609,6 +628,35 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Remote access",
           "Workflows",
         ],
+      },
+      {
+        id: "browser-agent-control",
+        tagline: "Create, inspect, or act on a visible Browser tab",
+        title: "Browser agent control",
+        summary:
+          "Lets an approved native agent tool or plugin CLI discover, create, and control thread-owned native Browser tabs. With this, a plugin can:",
+        bullets: [
+          "Discover connected and inactive tabs plus foreground or background owners, grouped by thread and project",
+          "Create a first or subsequent Browser in the caller's or an explicitly selected thread without changing the visible app layout",
+          "Run bounded interactions, uploads, cookie-profile import, waits, screenshots, dialogs, permissions, storage, diagnostics, and scripts",
+          "Batch explicit targets through bb.sdk.browser with per-item results and bounded concurrency",
+          "Receive cancellation, policy, and stale-target errors instead of silent retargeting",
+        ],
+        apiSymbols: [
+          "BrowserControlAction",
+          "BrowserControlError",
+          "BrowserFrameDescriptor",
+          "BrowserFrameTarget",
+          "BrowserTabDescriptor",
+          "BrowserTabOwnerDescriptor",
+          "BrowserTabTarget",
+          "BrowserWaitCriteria",
+          "BrowserWaitResult",
+          "PluginBrowser",
+          "PluginBrowserOpenOptions",
+          "PluginBrowserTabFilter",
+        ],
+        experimental: true,
       },
       {
         id: "background",

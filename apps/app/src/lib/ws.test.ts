@@ -269,6 +269,25 @@ describe("WebSocketManager thread-open signals", () => {
     expect(paneAction).toHaveBeenCalledWith(signal);
     expect(threadOpen).not.toHaveBeenCalled();
   });
+
+  it("routes targetless Browser open requests separately", () => {
+    const { manager } = createConnectedManager();
+    const openBrowserTab = vi.fn();
+    manager.onBrowserOpenTabRequest(openBrowserTab);
+    const request = {
+      type: "browser-open-tab-request",
+      mode: "owner",
+      requestId: "request-1",
+      clientId: "client-1",
+      windowId: "window-1",
+      ownerId: "owner-1",
+      url: "file:///Users/test/page.html",
+    } as const;
+
+    dispatchRaw(request);
+
+    expect(openBrowserTab).toHaveBeenCalledWith(request);
+  });
 });
 
 interface FakeBrowserEvents extends WebSocketManagerBrowserEvents {

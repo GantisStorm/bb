@@ -263,6 +263,8 @@ describe("desktop window factory", () => {
     expect(firstWindow).not.toBe(secondWindow);
     expect(createdWindows).toHaveLength(2);
     expect(createdWindows[0]?.options.frame).toBe(false);
+    expect(createdWindows[0]?.options.backgroundColor).toBe("#00000000");
+    expect(createdWindows[0]?.options.transparent).toBe(true);
     expect(createdWindows[0]?.options.minHeight).toBe(MIN_WINDOW_HEIGHT);
     expect(createdWindows[0]?.options.minWidth).toBe(MIN_WINDOW_WIDTH);
     expect(createdWindows[0]?.options.titleBarStyle).toBe("hiddenInset");

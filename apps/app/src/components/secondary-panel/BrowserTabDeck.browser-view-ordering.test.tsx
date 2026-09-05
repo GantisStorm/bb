@@ -15,6 +15,14 @@ import {
   createNoopDesktopBrowserApi,
 } from "@/test/bb-desktop-test-utils";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
+import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import {
+  browserAnnotationSnapshot,
+  createEmptyBrowserScreenshotEditor,
+  markBrowserAnnotationEpoch,
+  resetBrowserAnnotationStore,
+  setBrowserAnnotationScreenshot,
+} from "./browserAnnotationState";
 import { BrowserTabDeck, BrowserTabLifecycleObserver } from "./BrowserTabDeck";
 import { resetBrowserViewPersistence } from "./browserViewVisibilityCoordinator";
 
@@ -58,6 +66,13 @@ function makeBrowserTab(id: string, url: string): BrowserFixedPanelTab {
     kind: "browser",
     title: null,
     url,
+  };
+}
+
+function screenshotSessionForTest() {
+  return {
+    editor: createEmptyBrowserScreenshotEditor(),
+    screenshotUrl: "data:image/png;base64,session",
   };
 }
 
@@ -153,6 +168,7 @@ function renderBrowserDeck({
       threadId="thread-1"
       onUpdate={() => {}}
     />,
+    { wrapper: TooltipProvider },
   );
 }
 
@@ -179,6 +195,7 @@ describe("BrowserTabLifecycleObserver", () => {
     cleanup();
     vi.restoreAllMocks();
     resetBrowserViewPersistence();
+    resetBrowserAnnotationStore();
     delete window.bbDesktop;
   });
 
@@ -199,6 +216,79 @@ describe("BrowserTabLifecycleObserver", () => {
     expect(
       visibility.filter((request) => request.tabId === "tab-closed"),
     ).toEqual([{ tabId: "tab-closed", visible: false }]);
+  });
+
+  it("clears a closed tab's annotation record but keeps another tab's", async () => {
+    const { api, detachments } = createRecordingBrowserApi();
+    installDesktopBrowser(api);
+    const keyClosed = {
+      environmentId: null,
+      tabId: "tab-closed",
+      threadId: "thread-1",
+    };
+    const keyKept = {
+      environmentId: null,
+      tabId: "tab-kept",
+      threadId: "thread-1",
+    };
+    markBrowserAnnotationEpoch(keyClosed, 7);
+    setBrowserAnnotationScreenshot(
+      keyClosed,
+      7,
+      screenshotSessionForTest(),
+    );
+    markBrowserAnnotationEpoch(keyKept, 7);
+    setBrowserAnnotationScreenshot(keyKept, 7, screenshotSessionForTest());
+
+    const view = render(
+      <BrowserTabLifecycleObserver
+        browserTabs={[
+          makeBrowserTab("tab-closed", "https://example.com"),
+          makeBrowserTab("tab-kept", "https://example.com"),
+        ]}
+        threadId="thread-1"
+      />,
+    );
+    await waitFor(() => expect(detachments).toHaveLength(0));
+    view.rerender(
+      <BrowserTabLifecycleObserver
+        browserTabs={[makeBrowserTab("tab-kept", "https://example.com")]}
+        threadId="thread-1"
+      />,
+    );
+
+    await waitFor(() => expect(detachments).toEqual(["tab-closed"]));
+    expect(browserAnnotationSnapshot(keyClosed)).toBeNull();
+    expect(browserAnnotationSnapshot(keyKept)?.screenshot).not.toBeNull();
+  });
+
+  it("keeps the annotation record when only the thread changes", async () => {
+    const { api, detachments } = createRecordingBrowserApi();
+    installDesktopBrowser(api);
+    const key = {
+      environmentId: null,
+      tabId: "tab-closed",
+      threadId: "thread-1",
+    };
+    markBrowserAnnotationEpoch(key, 7);
+    setBrowserAnnotationScreenshot(key, 7, screenshotSessionForTest());
+
+    const view = render(
+      <BrowserTabLifecycleObserver
+        browserTabs={[makeBrowserTab("tab-closed", "https://example.com")]}
+        threadId="thread-1"
+      />,
+    );
+    await waitFor(() => expect(detachments).toHaveLength(0));
+    view.rerender(
+      <BrowserTabLifecycleObserver
+        browserTabs={[makeBrowserTab("tab-closed", "https://example.com")]}
+        threadId="thread-2"
+      />,
+    );
+
+    expect(detachments).toHaveLength(0);
+    expect(browserAnnotationSnapshot(key)?.screenshot).not.toBeNull();
   });
 });
 
@@ -236,7 +326,7 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
   });
 
   it("attaches a URL-bearing tab hidden and shows only after attach plus compact drawer readiness", async () => {
-    const { api, calls, attachments, bounds, visibility } =
+    const { api, calls, attachments, bounds, emitState, visibility } =
       createRecordingBrowserApi();
     installDesktopBrowser(api);
 
@@ -265,6 +355,50 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         onUpdate={() => {}}
       />,
     );
+
+    act(() => {
+      emitState({
+        tabId: "tab-url",
+        url: "",
+        title: null,
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        errorText: null,
+      });
+    });
+
+    expect(visibility.some((request) => request.visible)).toBe(false);
+    expect(
+      screen.queryByRole("heading", { name: "Browse the web" }),
+    ).toBeNull();
+
+
+    act(() => {
+      emitState({
+        tabId: "tab-url",
+        url: "https://example.com",
+        title: null,
+        isLoading: true,
+        canGoBack: false,
+        canGoForward: false,
+        errorText: null,
+      });
+    });
+
+    expect(visibility.some((request) => request.visible)).toBe(false);
+
+    act(() => {
+      emitState({
+        tabId: "tab-url",
+        url: "https://example.com",
+        title: "Example",
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        errorText: null,
+      });
+    });
 
     await waitFor(() => {
       expect(visibility.some((request) => request.visible)).toBe(true);
@@ -361,6 +495,7 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         threadId="thread-1"
         onUpdate={() => {}}
       />,
+      { wrapper: TooltipProvider },
     );
 
     await waitFor(() => expect(attachments).toHaveLength(1));
@@ -368,7 +503,7 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
   });
 
   it("shows an unfocused split view without moving native focus", async () => {
-    const { api, attachments, visibility, visibilityWithoutFocus } =
+    const { api, attachments, emitState, visibility, visibilityWithoutFocus } =
       createRecordingBrowserApi();
     installDesktopBrowser(api);
 
@@ -382,9 +517,22 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         threadId="thread-1"
         onUpdate={() => {}}
       />,
+      { wrapper: TooltipProvider },
     );
 
     await waitFor(() => expect(attachments).toHaveLength(1));
+
+    act(() => {
+      emitState({
+        tabId: "tab-url",
+        url: "https://example.com",
+        title: "Example",
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        errorText: null,
+      });
+    });
     await waitFor(() =>
       expect(visibilityWithoutFocus).toContainEqual({
         tabId: "tab-url",
@@ -412,10 +560,34 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         threadId="thread-1"
         onUpdate={() => {}}
       />,
+      { wrapper: TooltipProvider },
     );
 
     expect(screen.getByLabelText("Address and search bar")).toBeTruthy();
     expect(focusSpy).toHaveBeenCalled();
+  });
+
+  it("loads the homepage instead of a recent-page screen for an empty browser tab", async () => {
+    const { api, attachments } = createRecordingBrowserApi();
+    installDesktopBrowser(api);
+    const tab = makeBrowserTab("tab-url", "");
+
+    render(
+      <BrowserTabDeck
+        browserTabs={[tab]}
+        activeBrowserTabId={tab.id}
+        environmentId="env-1"
+        canShowNativeBrowserView={true}
+        threadId="thread-1"
+        onUpdate={() => {}}
+      />,
+      { wrapper: TooltipProvider },
+    );
+
+    await waitFor(() => {
+      expect(attachments).toHaveLength(1);
+    });
+    expect(attachments[0]?.url).toBe("https://www.google.com/");
   });
 
   it("shows a neutral page state and hides the native view after a main-frame load error", async () => {
@@ -425,6 +597,18 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
     renderBrowserDeck({
       canShowNativeBrowserView: true,
       url: "http://localhost:12843/",
+    });
+
+    act(() => {
+      emitState({
+        tabId: "tab-url",
+        url: "http://localhost:12843/",
+        title: null,
+        isLoading: false,
+        canGoBack: false,
+        canGoForward: false,
+        errorText: null,
+      });
     });
 
     await waitFor(() => {

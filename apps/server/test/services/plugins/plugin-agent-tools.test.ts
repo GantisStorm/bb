@@ -1,7 +1,15 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import { z } from "zod";
 import { createConnection, migrate, type DbConnection } from "@bb/db";
 import { encodeClientTurnRequestIdNumber } from "@bb/domain";
@@ -34,6 +42,7 @@ import {
   type TestAppHarness,
 } from "../../helpers/test-app.js";
 import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
+import type { NotificationHub } from "../../../src/ws/hub.js";
 
 const logger = testLogger as unknown as Logger;
 
@@ -64,19 +73,34 @@ describe("bb.agents.registerTool", () => {
   let db: DbConnection;
   let workDir: string;
   let service: PluginService;
+  let runBrowserControl: Mock<NotificationHub["runBrowserControl"]>;
+  let openBrowserTab: Mock<NotificationHub["openBrowserTab"]>;
 
   beforeEach(async () => {
     db = createConnection(":memory:");
     migrate(db);
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-tools-test-"));
+    runBrowserControl = vi.fn<NotificationHub["runBrowserControl"]>(
+      async () => ({ inspected: true }),
+    );
+    openBrowserTab = vi.fn<NotificationHub["openBrowserTab"]>(async () => ({
+      clientId: "client-a",
+      windowId: "window-a",
+      tabId: "tab-created",
+      navigationEpoch: 0,
+    }));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),
       telemetry: createNoopTelemetryService(),
       db,
       hub: {
         getDaemonSessionIdForHost: () => null,
+        listBrowserTabs: () => [],
+        listBrowserTabOwners: () => [],
+        openBrowserTab,
         notifyPluginSignal: () => 0,
         notifySystem: () => {},
+        runBrowserControl,
       },
       logger,
       dataDir: join(workDir, "data"),
@@ -193,6 +217,129 @@ describe("bb.agents.registerTool", () => {
       contentItems: [{ type: "inputText", text: "beta result" }],
     });
     expect(service.findAgentTool("missing_tool")).toBeUndefined();
+  });
+
+  it("keeps Browser control inside the audited native tool or CLI lifetime", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-browser-tool",
+      serverSource: "export default function plugin() {}",
+    });
+    await service.installPath(rootDir);
+    const api = service.getApi("browser-tool")!;
+    const context = {
+      threadId: "thr_1",
+      projectId: "proj_1",
+      signal: new AbortController().signal,
+    };
+    const target = {
+      clientId: "client-a",
+      windowId: "window-a",
+      tabId: "tab-a",
+      navigationEpoch: 3,
+    };
+
+    expect(() =>
+      api.experimental_browser.run(
+        target,
+        { kind: "snapshot", mode: "interactive" },
+        { context },
+      ),
+    ).toThrow("only during an active native agent tool or CLI call");
+    expect(() => api.experimental_browser.listTabs(context)).toThrow(
+      "only during an active native agent tool or CLI call",
+    );
+    expect(() => api.experimental_browser.listOwners(context)).toThrow(
+      "only during an active native agent tool or CLI call",
+    );
+    expect(() =>
+      api.experimental_browser.openTab(context, "https://example.test"),
+    ).toThrow("only during an active native agent tool or CLI call");
+
+    api.agents.registerTool({
+      name: "inspect_browser",
+      description: "Inspect Browser",
+      parameters: { type: "object" },
+      execute: async (_params, ctx) => {
+        expect(api.experimental_browser.listTabs(ctx)).toEqual([]);
+        expect(api.experimental_browser.listOwners(ctx)).toEqual([]);
+        await api.experimental_browser.openTab(
+          ctx,
+          "file:///Users/test/page.html",
+        );
+        await api.experimental_browser.openTab(
+          ctx,
+          "file:///Users/test/other-page.html",
+          { projectId: "proj_2", threadId: "thr_2" },
+        );
+        return JSON.stringify(
+          await api.experimental_browser.run(
+            target,
+            { kind: "snapshot", mode: "interactive" },
+            { context: ctx },
+          ),
+        );
+      },
+    });
+    const tool = service.findAgentTool("inspect_browser")!;
+    await expect(
+      service.invokeAgentTool({ ...tool, input: {}, ctx: context }),
+    ).resolves.toMatchObject({ success: true });
+    expect(runBrowserControl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target,
+        action: { kind: "snapshot", mode: "interactive" },
+        timeoutMs: 30_000,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(openBrowserTab).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        url: "file:///Users/test/page.html",
+        threadId: "thr_1",
+        projectId: "proj_1",
+        timeoutMs: 30_000,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(openBrowserTab).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: "file:///Users/test/other-page.html",
+        threadId: "thr_2",
+        projectId: "proj_2",
+        timeoutMs: 30_000,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+
+    let detachedSignal: AbortSignal | undefined;
+    runBrowserControl.mockImplementationOnce(async (rawArgs) => {
+      const args = rawArgs as { signal: AbortSignal };
+      detachedSignal = args.signal;
+      await new Promise<void>((resolve) =>
+        args.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        }),
+      );
+      return null;
+    });
+    api.agents.registerTool({
+      name: "detached_browser",
+      description: "Try detached Browser work",
+      parameters: { type: "object" },
+      execute: (_params, ctx) => {
+        void api.experimental_browser.run(
+          target,
+          { kind: "snapshot", mode: "interactive" },
+          { context: ctx },
+        );
+        return "started";
+      },
+    });
+    const detached = service.findAgentTool("detached_browser")!;
+    await service.invokeAgentTool({ ...detached, input: {}, ctx: context });
+    await vi.waitFor(() => expect(detachedSignal?.aborted).toBe(true));
   });
 
   it("zod parameters: converted to JSON schema, validated per call, bad input is not a plugin error", async () => {

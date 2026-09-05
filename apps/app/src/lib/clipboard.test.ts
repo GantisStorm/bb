@@ -11,7 +11,12 @@ vi.mock("@/components/ui/app-toast", () => ({
   appToast: toastMocks,
 }));
 
-import { copyTextToClipboard, copyToClipboardWithToast } from "./clipboard";
+import {
+  copyImageToClipboard,
+  copyImageToClipboardWithToast,
+  copyTextToClipboard,
+  copyToClipboardWithToast,
+} from "./clipboard";
 
 function installClipboard(writeText: (text: string) => Promise<void>): void {
   Object.defineProperty(navigator, "clipboard", {
@@ -94,6 +99,66 @@ describe("copyTextToClipboard", () => {
 
     expect(document.activeElement).toBe(button);
     expect(document.querySelector("textarea")).toBeNull();
+  });
+});
+
+describe("copyImageToClipboard", () => {
+  it("writes a PNG ClipboardItem through the Clipboard API", async () => {
+    const contents: Array<Record<string, Blob>> = [];
+    class TestClipboardItem {
+      constructor(content: Record<string, Blob>) {
+        contents.push(content);
+      }
+    }
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", TestClipboardItem);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { write },
+    });
+    const image = new Blob(["annotated screenshot"], { type: "image/png" });
+
+    await expect(copyImageToClipboard(image)).resolves.toBe(true);
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(contents).toEqual([{ "image/png": image }]);
+  });
+
+  it("dismisses a successful image copy toast promptly", async () => {
+    class TestClipboardItem {
+      constructor(_content: Record<string, Blob>) {}
+    }
+    vi.stubGlobal("ClipboardItem", TestClipboardItem);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { write: vi.fn().mockResolvedValue(undefined) },
+    });
+
+    await expect(
+      copyImageToClipboardWithToast(
+        new Blob(["annotated screenshot"], { type: "image/png" }),
+        { successMessage: "Copied image" },
+      ),
+    ).resolves.toBe(true);
+
+    expect(toastMocks.success).toHaveBeenCalledWith("Copied image", {
+      duration: 2_000,
+    });
+  });
+
+  it("reports a copy failure through the configured toast", async () => {
+    removeClipboard();
+    const image = new Blob(["annotated screenshot"], { type: "image/png" });
+
+    await expect(
+      copyImageToClipboardWithToast(image, {
+        errorMessage: "Couldn't copy image",
+        successMessage: "Copied image",
+      }),
+    ).resolves.toBe(false);
+
+    expect(toastMocks.error).toHaveBeenCalledWith("Couldn't copy image");
+    expect(toastMocks.success).not.toHaveBeenCalled();
   });
 });
 
@@ -207,5 +272,17 @@ describe("copyToClipboardWithToast", () => {
 
     expect(toastMocks.error).toHaveBeenCalledWith("Couldn't copy");
     expect(toastMocks.success).not.toHaveBeenCalled();
+  });
+
+  it("dismisses a successful text copy toast promptly", async () => {
+    installClipboard(vi.fn().mockResolvedValue(undefined));
+
+    await expect(
+      copyToClipboardWithToast("text", { successMessage: "Copied it" }),
+    ).resolves.toBe(true);
+
+    expect(toastMocks.success).toHaveBeenCalledWith("Copied it", {
+      duration: 2_000,
+    });
   });
 });

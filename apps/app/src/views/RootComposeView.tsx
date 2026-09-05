@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  registerBrowserControlOwner,
+  type BrowserControlOwnerRegistration,
+  waitForBrowserControlTab,
+} from "@/lib/browser-control-client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -1286,6 +1291,63 @@ function RootComposeSurface({
     },
     [openTab],
   );
+  const openControlledBrowserTab = useCallback(
+    async (url: string) => {
+      const tab = openTab({ kind: "browser", url });
+      if (tab?.kind !== "browser") {
+        throw new Error("The visible Browser tab could not be created");
+      }
+      openCompactDrawer();
+      return waitForBrowserControlTab(tab.id);
+    },
+    [openCompactDrawer, openTab],
+  );
+  const activateControlledBrowserTab = useCallback(
+    async (tabId: string) => {
+      activateTab(tabId);
+      openCompactDrawer();
+      return waitForBrowserControlTab(tabId);
+    },
+    [activateTab, openCompactDrawer],
+  );
+  const browserOwnerRegistrationRef =
+    useRef<BrowserControlOwnerRegistration | null>(null);
+  useEffect(() => {
+    if (rootPanelThreadId === null || !isDesktopBrowserAvailable()) return;
+    const registration = registerBrowserControlOwner({
+      active: true,
+      activateTab: activateControlledBrowserTab,
+      openTab: openControlledBrowserTab,
+      ownerId: ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+      closeTab,
+      projectId: isProjectless ? null : projectId,
+      threadId: rootPanelThreadId,
+      tabs: [],
+    });
+    browserOwnerRegistrationRef.current = registration;
+    return () => {
+      if (browserOwnerRegistrationRef.current === registration) {
+        browserOwnerRegistrationRef.current = null;
+      }
+      registration.dispose();
+    };
+  }, [
+    activateControlledBrowserTab,
+    closeTab,
+    isProjectless,
+    openControlledBrowserTab,
+    projectId,
+    rootPanelThreadId,
+  ]);
+  useEffect(() => {
+    browserOwnerRegistrationRef.current?.updateTabs(
+      browserTabs.map(({ id, title, url }) => ({
+        tabId: id,
+        title,
+        url,
+      })),
+    );
+  }, [browserTabs]);
   const openBrowserTabAndReveal = useCallback(
     (url?: string) => {
       if (rootPanelThreadId === null) {
@@ -1353,11 +1415,15 @@ function RootComposeSurface({
           onAddressFocusRequestConsumed={
             handleBrowserAddressFocusRequestConsumed
           }
+          onSelectionAddToChat={handleRootPanelSelectionAddToChat}
+          onControlOpenTab={openControlledBrowserTab}
+          onControlCloseTab={closeTab}
           environmentId={rootPanelEnvironmentId}
           canShowNativeBrowserView={canShowNativeBrowserView}
           canHandleBrowserCommands={canHandleBrowserCommands}
           onNativeFocus={onNativeFocus}
           threadId={rootPanelThreadId}
+          projectId={projectId}
           onUpdate={updateBrowserTab}
         />
       );
@@ -1365,9 +1431,13 @@ function RootComposeSurface({
     [
       browserAddressFocusRequest,
       browserTabs,
+      closeTab,
       handleBrowserAddressFocusRequestConsumed,
+      handleRootPanelSelectionAddToChat,
+      openControlledBrowserTab,
       rootPanelEnvironmentId,
       rootPanelThreadId,
+      projectId,
       updateBrowserTab,
     ],
   );

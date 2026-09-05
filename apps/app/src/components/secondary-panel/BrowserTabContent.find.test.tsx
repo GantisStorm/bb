@@ -22,6 +22,7 @@ import {
   createNoopDesktopBrowserApi,
 } from "@/test/bb-desktop-test-utils";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
+import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { BrowserTabContent } from "./BrowserTabContent";
 
 const FIND_KEYBINDING = {
@@ -135,19 +136,22 @@ function browserState(
 function renderBrowser(harness: FindHarness, initialUrl: string) {
   window.bbDesktop = createBbDesktopApi(desktopInfo, harness.api);
   return render(
-    <AppCommandProvider>
-      <BrowserTabContent
-        tabId="browser:test"
-        initialUrl={initialUrl}
-        addressFocusRequest={null}
-        canShowNativeBrowserView={true}
-        visibilityCoordinator={null}
-        environmentId={null}
-        threadId="thread-1"
-        onUpdate={() => {}}
-      />
-      <button type="button">Outside browser</button>
-    </AppCommandProvider>,
+    <TooltipProvider>
+      <AppCommandProvider>
+        <BrowserTabContent
+          tabId="browser:test"
+          initialUrl={initialUrl}
+          addressFocusRequest={null}
+          canShowNativeBrowserView={true}
+          visibilityCoordinator={null}
+          environmentId={null}
+          threadId="thread-1"
+          projectId={null}
+          onUpdate={() => {}}
+        />
+        <button type="button">Outside browser</button>
+      </AppCommandProvider>
+    </TooltipProvider>,
   );
 }
 

@@ -2,6 +2,7 @@ import { isLoopbackHostname } from "./loopback-hostname";
 
 const SEARCH_ENGINE_URL = "https://www.google.com/search";
 const HTTP_SCHEME_PATTERN = /^https?:\/\//i;
+const FILE_SCHEME_PATTERN = /^file:\/\//i;
 const WHITESPACE_PATTERN = /\s/u;
 const BARE_ADDRESS_PATTERN =
   /^(\[[^\]]+\](?::\d+)?|[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::\d+)?)(?:[/?#]\S*)?$/i;
@@ -127,6 +128,20 @@ function normalizeUrl(input: string): string | null {
       return null;
     }
     return input;
+  }
+  if (FILE_SCHEME_PATTERN.test(input)) {
+    try {
+      const parsed = new URL(input);
+      if (
+        parsed.protocol === "file:" &&
+        (parsed.hostname === "" || parsed.hostname === "localhost") &&
+        parsed.username === "" &&
+        parsed.password === ""
+      ) {
+        return input;
+      }
+    } catch {}
+    return null;
   }
 
   const rawHost = parseBareAddressHost(input);

@@ -221,6 +221,7 @@ interface NodeSurface {
 }
 
 type ExpectedBbSdkKey =
+  | "browser"
   | "environments"
   | "files"
   | "guide"
@@ -238,6 +239,8 @@ type ExpectedBbSdkKey =
   | "threads";
 
 type ExpectedRealtimeKey = "subscribe";
+
+type ExpectedBrowserKey = "batch" | "control" | "open" | "tabs" | "wait";
 
 type ExpectedEnvironmentsKey =
   | "archiveThreads"
@@ -504,6 +507,9 @@ describe("SDK public type entrypoints", () => {
 
   it("snapshots every SDK area and nested method group", () => {
     expectTypeOf<keyof RootBbRealtime>().toEqualTypeOf<ExpectedRealtimeKey>();
+    expectTypeOf<
+      keyof RootBbSdk["browser"]
+    >().toEqualTypeOf<ExpectedBrowserKey>();
     expectTypeOf<
       keyof RootBbSdk["environments"]
     >().toEqualTypeOf<ExpectedEnvironmentsKey>();

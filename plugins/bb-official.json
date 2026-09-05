@@ -14,6 +14,10 @@
       "https://getbb.app/marketplace/v2/screenshots/automations/automations-sidebar.png"
     ]
   },
+  "browser": {
+    "category": "utilities",
+    "screenshots": []
+  },
   "connect": {
     "category": "cloud-and-remote",
     "screenshots": []

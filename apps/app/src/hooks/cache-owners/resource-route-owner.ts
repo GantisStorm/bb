@@ -8,6 +8,10 @@ import type {
   ThreadChangedMessage,
 } from "@bb/domain";
 import {
+  clearBrowserAnnotationRecordsForEnvironment,
+  clearBrowserAnnotationRecordsForThread,
+} from "@/components/secondary-panel/browserAnnotationState";
+import {
   destroyPersistedBrowserViewsForEnvironment,
   destroyPersistedBrowserViewsForThread,
 } from "@/components/secondary-panel/browserViewVisibilityCoordinator";
@@ -73,6 +77,7 @@ export function useDeletedResourceRouteOwner(): DeletedResourceRouteChangeHandle
             desktopBrowser: getDesktopBrowserApi(),
             environmentId: message.id,
           });
+          clearBrowserAnnotationRecordsForEnvironment(message.id);
         }
         return;
       }
@@ -81,6 +86,7 @@ export function useDeletedResourceRouteOwner(): DeletedResourceRouteChangeHandle
         desktopBrowser: getDesktopBrowserApi(),
         threadId: deletedThreadId,
       });
+      clearBrowserAnnotationRecordsForThread(deletedThreadId);
       if (routeThreadId !== deletedThreadId) {
         return;
       }

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
+import type { BrowserTabTarget } from "@bb/server-contract";
 import type { BrowserFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import { getDesktopBrowserApi } from "@/lib/bb-desktop";
 import {
   BrowserTabContent,
   type BrowserAddressFocusRequest,
 } from "./BrowserTabContent";
+import { clearBrowserAnnotationRecordsForTab } from "./browserAnnotationState";
 import {
   createBrowserViewVisibilityCoordinator,
   destroyPersistedBrowserView,
@@ -16,11 +18,15 @@ interface BrowserTabDeckProps {
   activeBrowserTabId: string | null;
   addressFocusRequest?: BrowserAddressFocusRequest | null;
   onAddressFocusRequestConsumed?: (request: BrowserAddressFocusRequest) => void;
+  onSelectionAddToChat?: (text: string) => void;
+  onControlOpenTab?: (url: string) => Promise<BrowserTabTarget>;
+  onControlCloseTab?: (tabId: string) => void;
   environmentId: string | null;
   canShowNativeBrowserView: boolean;
   canHandleBrowserCommands?: boolean;
   onNativeFocus?: () => void;
   threadId: string;
+  projectId?: string | null;
   onUpdate: (args: UpdateBrowserTabArgs) => void;
 }
 
@@ -62,6 +68,7 @@ export function BrowserTabLifecycleObserver({
       for (const tabId of previous.tabIds) {
         if (!tabIds.has(tabId)) {
           destroyPersistedBrowserView({ desktopBrowser, tabId });
+          clearBrowserAnnotationRecordsForTab(tabId);
         }
       }
     }
@@ -86,11 +93,15 @@ export function BrowserTabDeck({
   activeBrowserTabId,
   addressFocusRequest = null,
   onAddressFocusRequestConsumed,
+  onSelectionAddToChat,
+  onControlOpenTab,
+  onControlCloseTab,
   environmentId,
   canShowNativeBrowserView,
   canHandleBrowserCommands = canShowNativeBrowserView,
   onNativeFocus,
   threadId,
+  projectId = null,
   onUpdate,
 }: BrowserTabDeckProps) {
   const desktopBrowser = useMemo(() => getDesktopBrowserApi(), []);
@@ -122,13 +133,21 @@ export function BrowserTabDeck({
             : null
         }
         onAddressFocusRequestConsumed={onAddressFocusRequestConsumed}
+        onSelectionAddToChat={onSelectionAddToChat}
+        onControlOpenTab={onControlOpenTab}
         canShowNativeBrowserView={canShowNativeBrowserView}
         canHandleBrowserCommands={canHandleBrowserCommands}
         onNativeFocus={onNativeFocus}
         visibilityCoordinator={visibilityCoordinator}
         environmentId={environmentId}
         threadId={threadId}
+        projectId={projectId}
         onUpdate={onUpdate}
+        onControlCloseTab={
+          onControlCloseTab === undefined
+            ? undefined
+            : () => onControlCloseTab(activeBrowserTab.id)
+        }
       />
     </div>
   );

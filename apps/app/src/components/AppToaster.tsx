@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { Toaster, type ToasterProps } from "sonner";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePreferredTheme } from "@/hooks/useTheme";
@@ -217,7 +218,8 @@ export function AppToaster({
     swipeDirections: renderedSwipeDirections,
     toasterRef,
   });
-  return (
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <Toaster
       ref={toasterRef}
       theme={theme}
@@ -228,6 +230,7 @@ export function AppToaster({
         isCompactViewport ? withCompactTopOffset(mobileOffset) : mobileOffset
       }
       swipeDirections={renderedSwipeDirections}
-    />
+    />,
+    document.body,
   );
 }

@@ -6,6 +6,7 @@ import {
   createEvent,
   fireEvent,
   render,
+  screen,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,7 @@ import { AppToastContent } from "./ui/app-toast";
 afterEach(() => {
   toast.dismiss();
   cleanup();
+  document.body.innerHTML = "";
 });
 
 async function renderToaster(isCompactViewport: boolean) {
@@ -78,6 +80,23 @@ function swipeToast(
 }
 
 describe("AppToaster", () => {
+  it("renders outside the masked app root", async () => {
+    document.body.innerHTML = '<div id="root"><div id="mount"></div></div>';
+    const root = document.getElementById("root");
+    const mount = document.getElementById("mount");
+    if (mount === null) throw new Error("Expected toast test mount");
+
+    render(<AppToaster />, { container: mount });
+    act(() => {
+      toast("Portal test", { duration: Number.POSITIVE_INFINITY });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Portal test")).toBeTruthy();
+    });
+    expect(root?.contains(screen.getByText("Portal test"))).toBe(false);
+  });
+
   it("places compact viewport toasts at the top center", async () => {
     const toaster = await renderToaster(true);
     expect(toaster?.getAttribute("data-x-position")).toBe("center");

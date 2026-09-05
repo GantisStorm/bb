@@ -907,6 +907,10 @@
     font-family: var(--font-sans);
   }
 
+  body[data-desktop-browser-view-aperture] {
+    background-color: transparent;
+  }
+
   button,
   a,
   [role="button"],

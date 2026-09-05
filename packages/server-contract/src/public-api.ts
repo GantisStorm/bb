@@ -43,6 +43,13 @@ import type {
   PathTerminal,
 } from "./common.js";
 import type {
+  BrowserBatchRequest,
+  BrowserBatchResponse,
+  BrowserControlRequest,
+  BrowserControlResponse,
+  BrowserOpenRequest,
+  BrowserOpenResponse,
+  BrowserTabsResponse,
   CloseTerminalRequest,
   CommandListResponse,
   CopyProjectAttachmentsRequest,
@@ -222,6 +229,9 @@ import type {
 } from "./api/thread-tabs.js";
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
 import {
+  browserBatchRequestSchema,
+  browserControlRequestSchema,
+  browserOpenRequestSchema,
   closeTerminalRequestSchema,
   copyProjectAttachmentsRequestSchema,
   createFilePreviewRequestSchema,
@@ -695,6 +705,38 @@ export const publicApiRoutes = {
         hostProviderCliInstallRequestSchema,
       ),
       response: textResponse<HostProviderCliInstallEvent>(),
+    }),
+  },
+  browser: {
+    tabs: defineRoute({
+      path: "/browser/tabs",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<BrowserTabsResponse>(),
+    }),
+    open: defineRoute({
+      path: "/browser/open",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserOpenRequest>(
+        browserOpenRequestSchema,
+      ),
+      response: jsonResponse<BrowserOpenResponse>(),
+    }),
+    control: defineRoute({
+      path: "/browser/control",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserControlRequest>(
+        browserControlRequestSchema,
+      ),
+      response: jsonResponse<BrowserControlResponse>(),
+    }),
+    batch: defineRoute({
+      path: "/browser/batch",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserBatchRequest>(
+        browserBatchRequestSchema,
+      ),
+      response: jsonResponse<BrowserBatchResponse>(),
     }),
   },
 

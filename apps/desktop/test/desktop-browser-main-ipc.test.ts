@@ -13,6 +13,13 @@ import {
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_PAGE_SCRIPT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_RUN_PAGE_SCRIPT_CHANNEL,
   BB_DESKTOP_BROWSER_GO_BACK_CHANNEL,
   BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
   BB_DESKTOP_BROWSER_NAVIGATE_CHANNEL,
@@ -40,12 +47,18 @@ const electronMock = vi.hoisted(() => {
   }
 
   type FakeIpcListener = (event: FakeIpcEvent, payload: unknown) => void;
+  type FakeIpcHandler = (
+    event: FakeIpcEvent,
+    payload: unknown,
+  ) => Promise<unknown>;
 
   const listeners = new Map<string, FakeIpcListener>();
+  const handlers = new Map<string, FakeIpcHandler>();
   const windowsBySender = new Map<FakeWebContents, FakeBrowserWindow>();
 
   return {
     listeners,
+    handlers,
     windowsBySender,
     BrowserWindow: {
       fromWebContents(sender: FakeWebContents): FakeBrowserWindow | null {
@@ -53,6 +66,9 @@ const electronMock = vi.hoisted(() => {
       },
     },
     ipcMain: {
+      handle(channel: string, handler: FakeIpcHandler): void {
+        handlers.set(channel, handler);
+      },
       on(channel: string, listener: FakeIpcListener): void {
         listeners.set(channel, listener);
       },
@@ -66,6 +82,7 @@ vi.mock("electron", () => ({
 }));
 
 type AttachCall = Parameters<DesktopBrowserViewManager["attach"]>[0];
+type CloseCall = Parameters<DesktopBrowserViewManager["close"]>[0];
 type DetachCall = Parameters<DesktopBrowserViewManager["detach"]>[0];
 type FindInPageCall = Parameters<DesktopBrowserViewManager["findInPage"]>[0];
 type StopFindInPageCall = Parameters<
@@ -77,6 +94,42 @@ type SetVisibleCall = Parameters<DesktopBrowserViewManager["setVisible"]>[0];
 type TabCommandCall = Parameters<DesktopBrowserViewManager["reload"]>[0];
 type WindowResizeCall = Parameters<
   DesktopBrowserViewManager["beginWindowResize"]
+>[0];
+type PageScriptCall = Parameters<DesktopBrowserViewManager["runPageScript"]>[0];
+type PointerInputCall = Parameters<
+  DesktopBrowserViewManager["sendPointerInput"]
+>[0];
+type ListFramesCall = Parameters<DesktopBrowserViewManager["listFrames"]>[0];
+type TrustedInputCall = Parameters<
+  DesktopBrowserViewManager["sendTrustedInput"]
+>[0];
+type WaitBrowserEventCall = Parameters<
+  DesktopBrowserViewManager["waitForBrowserEvent"]
+>[0];
+type CancelBrowserEventCall = Parameters<
+  DesktopBrowserViewManager["cancelBrowserEvent"]
+>[0];
+type CancelPageScriptCall = Parameters<
+  DesktopBrowserViewManager["cancelPageScript"]
+>[0];
+type CapturePageCall = Parameters<DesktopBrowserViewManager["capturePage"]>[0];
+type SetViewportProfileCall = Parameters<
+  DesktopBrowserViewManager["setViewportProfile"]
+>[0];
+type ImportCookiesCall = Parameters<
+  DesktopBrowserViewManager["importCookies"]
+>[0];
+type ListCookieImportSourcesCall = Parameters<
+  DesktopBrowserViewManager["listCookieImportSources"]
+>[0];
+type ImportCookiesFromBrowserCall = Parameters<
+  DesktopBrowserViewManager["importCookiesFromBrowser"]
+>[0];
+type ClearViewportProfileCall = Parameters<
+  DesktopBrowserViewManager["clearViewportProfile"]
+>[0];
+type ClearImportedCookiesCall = Parameters<
+  DesktopBrowserViewManager["clearImportedCookies"]
 >[0];
 
 interface FakeWebContents {
@@ -100,6 +153,7 @@ interface SendBrowserIpcArgs {
 
 class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
   public readonly attachCalls: AttachCall[] = [];
+  public readonly closeCalls: CloseCall[] = [];
   public readonly beginWindowResizeCalls: WindowResizeCall[] = [];
   public readonly destroyAllCalls: string[] = [];
   public readonly detachCalls: DetachCall[] = [];
@@ -112,10 +166,23 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
   public readonly navigateCalls: NavigateCall[] = [];
   public readonly releaseWindowCalls: number[] = [];
   public readonly reloadCalls: TabCommandCall[] = [];
+  public readonly trustLocalhostCertificateCalls: TabCommandCall[] = [];
   public readonly setBoundsCalls: SetBoundsCall[] = [];
   public readonly setVisibleCalls: SetVisibleCall[] = [];
   public readonly setVisibleWithoutFocusCalls: SetVisibleCall[] = [];
   public readonly stopCalls: TabCommandCall[] = [];
+  public readonly pageScriptCalls: PageScriptCall[] = [];
+  public readonly pointerInputCalls: PointerInputCall[] = [];
+  public readonly setViewportProfileCalls: SetViewportProfileCall[] = [];
+  public readonly clearViewportProfileCalls: ClearViewportProfileCall[] = [];
+  public readonly cancelPageScriptCalls: CancelPageScriptCall[] = [];
+  public readonly capturePageCalls: CapturePageCall[] = [];
+  public readonly importCookiesCalls: ImportCookiesCall[] = [];
+  public readonly listCookieImportSourcesCalls: ListCookieImportSourcesCall[] =
+    [];
+  public readonly importCookiesFromBrowserCalls: ImportCookiesFromBrowserCall[] =
+    [];
+  public readonly clearImportedCookiesCalls: ClearImportedCookiesCall[] = [];
 
   attach(args: AttachCall): void {
     this.attachCalls.push(args);
@@ -133,6 +200,44 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
 
   detach(args: DetachCall): void {
     this.detachCalls.push(args);
+  }
+
+  close(args: CloseCall) {
+    this.closeCalls.push(args);
+    return { navigationEpoch: args.request.expectedNavigationEpoch };
+  }
+  async runAutomation(
+    args: Parameters<DesktopBrowserViewManager["runAutomation"]>[0],
+  ) {
+    return {
+      navigationEpoch: args.request.expectedNavigationEpoch,
+      value: { ok: true },
+    };
+  }
+  async importCookies(args: ImportCookiesCall) {
+    this.importCookiesCalls.push(args);
+    return { importedCookies: args.request.cookies.length };
+  }
+  listCookieImportSources(args: ListCookieImportSourcesCall) {
+    this.listCookieImportSourcesCalls.push(args);
+    return {
+      sources: [
+        {
+          family: "chrome",
+          label: "Google Chrome",
+          profiles: [{ id: "Default", label: "Default" }],
+        },
+      ],
+    };
+  }
+
+  async importCookiesFromBrowser(args: ImportCookiesFromBrowserCall) {
+    this.importCookiesFromBrowserCalls.push(args);
+    return { importedCookies: 3 };
+  }
+
+  async clearImportedCookies(args: ClearImportedCookiesCall) {
+    this.clearImportedCookiesCalls.push(args);
   }
 
   endWindowResize(hostWindow: WindowResizeCall): void {
@@ -170,6 +275,10 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
   reload(args: TabCommandCall): void {
     this.reloadCalls.push(args);
   }
+  trustLocalhostCertificate(args: TabCommandCall): void {
+    this.trustLocalhostCertificateCalls.push(args);
+  }
+
 
   setBounds(args: SetBoundsCall): void {
     this.setBoundsCalls.push(args);
@@ -186,12 +295,79 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
   stop(args: TabCommandCall): void {
     this.stopCalls.push(args);
   }
+
+  runPageScript(args: PageScriptCall) {
+    this.pageScriptCalls.push(args);
+    return Promise.resolve({
+      requestId: args.request.requestId,
+      navigationEpoch: 0,
+      value: { ok: true },
+    });
+  }
+
+  cancelPageScript(args: CancelPageScriptCall): void {
+    this.cancelPageScriptCalls.push(args);
+  }
+
+  sendPointerInput(args: PointerInputCall) {
+    this.pointerInputCalls.push(args);
+    return Promise.resolve({
+      navigationEpoch: args.request.expectedNavigationEpoch,
+      dispatched: args.request.events.length,
+    });
+  }
+
+  listFrames(args: ListFramesCall) {
+    return Promise.resolve({
+      navigationEpoch: args.request.expectedNavigationEpoch,
+      frames: [],
+    });
+  }
+
+  sendTrustedInput(args: TrustedInputCall) {
+    return Promise.resolve({
+      navigationEpoch: args.request.expectedNavigationEpoch,
+      dispatched: 1,
+    });
+  }
+
+  waitForBrowserEvent(args: WaitBrowserEventCall) {
+    return Promise.reject(
+      new Error(`Unexpected browser event wait: ${args.request.requestId}`),
+    );
+  }
+
+  cancelBrowserEvent(_args: CancelBrowserEventCall): void {}
+
+
+  setViewportProfile(args: SetViewportProfileCall) {
+    this.setViewportProfileCalls.push(args);
+    return {
+      navigationEpoch: args.request.expectedNavigationEpoch,
+      generation: 1,
+      profile: args.request.profile,
+    };
+  }
+
+  clearViewportProfile(args: ClearViewportProfileCall): void {
+    this.clearViewportProfileCalls.push(args);
+  }
+
+  capturePage(args: CapturePageCall) {
+    this.capturePageCalls.push(args);
+    return Promise.resolve({
+      navigationEpoch: 0,
+      dataUrl: "data:image/png;base64,cG5n",
+      pixelSize: { width: 800, height: 600 },
+    });
+  }
 }
 
 let nextWebContentsId = 1;
 
 beforeEach(() => {
   electronMock.listeners.clear();
+  electronMock.handlers.clear();
   electronMock.windowsBySender.clear();
   nextWebContentsId = 1;
 });
@@ -217,6 +393,15 @@ function sendBrowserIpc(args: SendBrowserIpcArgs): void {
     throw new Error(`Expected listener for ${args.channel}.`);
   }
   listener({ sender: args.sender }, args.payload);
+}
+
+async function invokeBrowserIpc(args: SendBrowserIpcArgs): Promise<unknown> {
+  const handler = electronMock.handlers.get(args.channel);
+  expect(handler).toBeDefined();
+  if (handler === undefined) {
+    throw new Error(`Expected handler for ${args.channel}.`);
+  }
+  return handler({ sender: args.sender }, args.payload);
 }
 
 function oversizedBrowserUrl(): string {
@@ -261,6 +446,11 @@ describe("registerDesktopBrowserIpc", () => {
       sender: renderer.sender,
     });
     sendBrowserIpc({
+      channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
+      payload: { tabId: "browser:a" },
+      sender: renderer.sender,
+    });
+    sendBrowserIpc({
       channel: BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
       payload: { tabId: "browser:a" },
       sender: renderer.sender,
@@ -273,6 +463,9 @@ describe("registerDesktopBrowserIpc", () => {
     expect(manager.navigateCalls[0]?.hostWindow).toBe(renderer.hostWindow);
     expect(manager.navigateCalls[0]?.request).toEqual(navigateRequest);
     expect(manager.reloadCalls).toEqual([
+      { hostWindow: renderer.hostWindow, tabId: "browser:a" },
+    ]);
+    expect(manager.trustLocalhostCertificateCalls).toEqual([
       { hostWindow: renderer.hostWindow, tabId: "browser:a" },
     ]);
     expect(manager.focusCalls).toEqual([
@@ -427,6 +620,7 @@ describe("registerDesktopBrowserIpc", () => {
       BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
       BB_DESKTOP_BROWSER_RELOAD_CHANNEL,
       BB_DESKTOP_BROWSER_STOP_CHANNEL,
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
     ]) {
       sendBrowserIpc({
         channel,
@@ -475,6 +669,132 @@ describe("registerDesktopBrowserIpc", () => {
       { hostWindow: renderer.hostWindow, tabId: "browser:a" },
     ]);
     expect(manager.stopCalls).toEqual([
+      { hostWindow: renderer.hostWindow, tabId: "browser:a" },
+    ]);
+  });
+
+  it("binds page-script run and cancellation to the IPC sender's window", async () => {
+    const manager = new RecordingDesktopBrowserViewManager();
+    registerDesktopBrowserIpc(manager);
+    const renderer = createTrustedRenderer("main-window");
+    const request = {
+      tabId: "browser:a",
+      requestId: "req_1",
+      expectedNavigationEpoch: 0,
+      source: "({ input }) => input",
+      input: { intent: "inspect" },
+      timeoutMs: 1_000,
+    };
+
+    await expect(
+      invokeBrowserIpc({
+        channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_RUN_PAGE_SCRIPT_CHANNEL,
+        payload: request,
+        sender: renderer.sender,
+      }),
+    ).resolves.toEqual({
+      requestId: "req_1",
+      navigationEpoch: 0,
+      value: { ok: true },
+    });
+    sendBrowserIpc({
+      channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_PAGE_SCRIPT_CHANNEL,
+      payload: { tabId: "browser:a", requestId: "req_1" },
+      sender: renderer.sender,
+    });
+
+    expect(manager.pageScriptCalls).toEqual([
+      { hostWindow: renderer.hostWindow, request },
+    ]);
+    expect(manager.cancelPageScriptCalls).toEqual([
+      {
+        hostWindow: renderer.hostWindow,
+        tabId: "browser:a",
+        requestId: "req_1",
+      },
+    ]);
+  });
+
+  it("binds cookie import to the IPC sender's Browser tab", async () => {
+    const manager = new RecordingDesktopBrowserViewManager();
+    registerDesktopBrowserIpc(manager);
+    const renderer = createTrustedRenderer("main-window");
+    const request = {
+      tabId: "browser:a",
+      cookies: [
+        {
+          name: "session",
+          value: "secret",
+          domain: ".example.com",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          sameSite: "lax",
+          expirationDate: null,
+        },
+      ],
+    };
+
+    await expect(
+      invokeBrowserIpc({
+        channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
+        payload: request,
+        sender: renderer.sender,
+      }),
+    ).resolves.toEqual({ importedCookies: 1 });
+    expect(manager.importCookiesCalls).toEqual([
+      { hostWindow: renderer.hostWindow, request },
+    ]);
+  });
+
+  it("binds native browser import source selection to the IPC sender's Browser tab", async () => {
+    const manager = new RecordingDesktopBrowserViewManager();
+    registerDesktopBrowserIpc(manager);
+    const renderer = createTrustedRenderer("main-window");
+    const listRequest = { tabId: "browser:a" };
+    const importRequest = {
+      family: "chrome",
+      profileId: "Default",
+      tabId: "browser:a",
+    };
+
+    await expect(
+      invokeBrowserIpc({
+        channel:
+          BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
+        payload: listRequest,
+        sender: renderer.sender,
+      }),
+    ).resolves.toEqual({
+      sources: [
+        {
+          family: "chrome",
+          label: "Google Chrome",
+          profiles: [{ id: "Default", label: "Default" }],
+        },
+      ],
+    });
+    await expect(
+      invokeBrowserIpc({
+        channel:
+          BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
+        payload: importRequest,
+        sender: renderer.sender,
+      }),
+    ).resolves.toEqual({ importedCookies: 3 });
+    await invokeBrowserIpc({
+      channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
+      payload: listRequest,
+      sender: renderer.sender,
+    });
+
+    expect(manager.listCookieImportSourcesCalls).toEqual([
+      { hostWindow: renderer.hostWindow, request: listRequest },
+    ]);
+    expect(manager.importCookiesFromBrowserCalls).toEqual([
+      { hostWindow: renderer.hostWindow, request: importRequest },
+    ]);
+    expect(manager.clearImportedCookiesCalls).toEqual([
       { hostWindow: renderer.hostWindow, tabId: "browser:a" },
     ]);
   });

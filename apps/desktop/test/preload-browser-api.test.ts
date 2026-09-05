@@ -23,6 +23,12 @@ import {
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_WAIT_EVENT_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_RESULT_CHANNEL,
   BB_DESKTOP_BROWSER_GO_BACK_CHANNEL,
   BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
@@ -109,10 +115,54 @@ const electronMock = vi.hoisted(() => {
       },
     },
     ipcRenderer: {
-      invoke(channel: string): Promise<BbDesktopInfo | BbDesktopWindowState> {
+      invoke(channel: string): Promise<
+        | BbDesktopInfo
+        | BbDesktopWindowState
+        | { importedCookies: number }
+        | {
+            sources: {
+              family: string;
+              label: string;
+              profiles: { id: string; label: string }[];
+            }[];
+          }
+        | {
+            navigationEpoch: number;
+            requestId: string;
+            value: { kind: "load-state"; state: "load" };
+          }
+      > {
         invokeCalls.push(channel);
         if (channel === "bb-desktop:get-window-state") {
           return Promise.resolve(desktopWindowState);
+        }
+        if (
+          channel === BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL ||
+          channel ===
+            BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL
+        ) {
+          return Promise.resolve({ importedCookies: 3 });
+        }
+        if (
+          channel ===
+          BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL
+        ) {
+          return Promise.resolve({
+            sources: [
+              {
+                family: "chrome",
+                label: "Google Chrome",
+                profiles: [{ id: "Default", label: "Default" }],
+              },
+            ],
+          });
+        }
+        if (channel === BB_DESKTOP_BROWSER_EXPERIMENTAL_WAIT_EVENT_CHANNEL) {
+          return Promise.resolve({
+            navigationEpoch: 0,
+            requestId: "wait-1",
+            value: { kind: "load-state", state: "load" },
+          });
         }
         return Promise.resolve(desktopInfo);
       },
@@ -201,10 +251,35 @@ describe("desktop preload browser API", () => {
       tabId: "browser:a",
       action: "clearSelection" as const,
     };
+    const nativeImportRequest = {
+      family: "chrome",
+      profileId: "Default",
+      tabId: "browser:a",
+    };
 
     expect(Object.keys(api.browser).sort()).toEqual([
       "attach",
       "detach",
+      "experimental_browserEventWaitVersion",
+      "experimental_browserFrameRuntimeVersion",
+      "experimental_browserPageRuntimeVersion",
+      "experimental_browserTrustedInputVersion",
+      "experimental_cancelBrowserEvent",
+      "experimental_captureBrowserPage",
+      "experimental_clearBrowserViewportProfile",
+      "experimental_clearImportedCookies",
+      "experimental_closeBrowserTab",
+      "experimental_importCookies",
+      "experimental_importCookiesFromBrowser",
+      "experimental_listBrowserFrames",
+      "experimental_listCookieImportSources",
+      "experimental_runBrowserAutomation",
+      "experimental_runBrowserPageScript",
+      "experimental_sendBrowserPointerInput",
+      "experimental_sendBrowserTrustedInput",
+      "experimental_setBrowserViewportProfile",
+      "experimental_trustLocalhostCertificate",
+      "experimental_waitBrowserEvent",
       "findInPage",
       "focus",
       "goBack",
@@ -239,6 +314,26 @@ describe("desktop preload browser API", () => {
     api.browser.setVisibleWithoutFocus?.(visibleRequest);
     api.browser.findInPage?.(findRequest);
     api.browser.stopFindInPage?.(stopFindRequest);
+    api.browser.experimental_trustLocalhostCertificate?.({ tabId: "browser:a" });
+    await expect(
+      api.browser.experimental_listCookieImportSources?.({
+        tabId: "browser:a",
+      }),
+    ).resolves.toEqual({
+      sources: [
+        {
+          family: "chrome",
+          label: "Google Chrome",
+          profiles: [{ id: "Default", label: "Default" }],
+        },
+      ],
+    });
+    await expect(
+      api.browser.experimental_importCookiesFromBrowser?.(nativeImportRequest),
+    ).resolves.toEqual({ importedCookies: 3 });
+    await api.browser.experimental_clearImportedCookies?.({
+      tabId: "browser:a",
+    });
     api.setTheme("dark");
     await api.checkForUpdates();
     await expect(api.getWindowState?.()).resolves.toEqual({
@@ -296,6 +391,10 @@ describe("desktop preload browser API", () => {
         channel: BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
         payload: stopFindRequest,
       },
+      {
+        channel: BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
+        payload: { tabId: "browser:a" },
+      },
       { channel: BB_DESKTOP_SET_THEME_CHANNEL, payload: "dark" },
     ]);
     expect(electronMock.invokeCalls).toContain(BB_DESKTOP_GET_INFO_CHANNEL);
@@ -306,9 +405,38 @@ describe("desktop preload browser API", () => {
       BB_DESKTOP_GET_WINDOW_STATE_CHANNEL,
     );
     expect(electronMock.invokeCalls).toContain(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
+    );
+    expect(electronMock.invokeCalls).toContain(
       BB_DESKTOP_INSTALL_UPDATE_CHANNEL,
     );
   }, 10_000);
+
+  it("accepts a bridged wait signal without event listener methods", async () => {
+    const waitOptions = {
+      signal: { aborted: false },
+    } as unknown as { signal: AbortSignal };
+
+    await expect(
+      api.browser.experimental_waitBrowserEvent?.(
+        {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          requestId: "wait-1",
+          criteria: {
+            kind: "load-state",
+            document: "current",
+            state: "load",
+          },
+        },
+        waitOptions,
+      ),
+    ).resolves.toEqual({
+      navigationEpoch: 0,
+      requestId: "wait-1",
+      value: { kind: "load-state", state: "load" },
+    });
+  });
 
   it("converts zoomed renderer bounds to native window coordinates", () => {
     electronMock.setZoomFactor(1.25);

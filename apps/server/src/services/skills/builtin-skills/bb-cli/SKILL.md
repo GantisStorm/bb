@@ -1,6 +1,6 @@
 ---
 name: bb-cli
-description: Use this when controlling bb. The bb CLI inspects and manages threads, environments, projects, machines, providers, notifications, skills, plugins, settings, terminals, and other BB services.
+description: Use this when controlling bb. The bb CLI inspects and manages threads, environments, projects, machines, providers, visible Browser tabs, notifications, skills, plugins, settings, terminals, and other BB services.
 ---
 
 # BB CLI
@@ -109,6 +109,40 @@ are QA-only overrides; `switchThreshold` must be greater than 0 and at most 1.
 
 - Inspect real status, logs, API results, or diffs instead of assumptions.
 - Keep file paths on the machine that owns the selected workspace.
+
+## Browser control
+
+Use `bb browser list --json` before each Browser action. `bb browser open
+--thread <thread-id>` creates a thread-owned Browser without changing the
+visible app layout, even when that thread's Browser panel is not mounted. It
+never falls back to another thread. A connected tab supplies the exact target
+for later actions; activate an inactive tab through its panel owner.
+
+```sh
+bb browser list --json
+bb browser open --thread <thread-id> --url <url> --json
+bb browser run --client <client-id> --window <window-id> --tab <tab-id> --epoch <navigation-epoch> --action '{"kind":"snapshot","mode":"interactive"}' --json
+bb browser wait --client <client-id> --window <window-id> --tab <tab-id> --epoch <navigation-epoch> (--locator <json> | --text <text> | --url <url> | --navigation <start|commit> | --load-state <state> | --popup | --request <url> | --response <url> | --download-blocked) [--match <exact|glob>] --json
+bb browser batch --items '[{"id":"snapshot","target":{"clientId":"<client-id>","windowId":"<window-id>","tabId":"<tab-id>","navigationEpoch":<epoch>},"action":{"kind":"snapshot","mode":"dom"}}]' --json
+```
+
+CSS, accessibility, shadow-root, and nested cross-origin frame locators are
+supported. Discover child frames with `{"kind":"list-frames"}` and attach the
+returned opaque `{"frameId":"...","documentEpoch":...}` target to a locator;
+never retain a frame target after its document or the main page changes.
+Actions cover native pointer and form controls, file upload by bounded base64
+content, navigation and tab lifecycle, typed waits, screenshots, dialogs,
+permissions, page storage, diagnostics, and explicit native browser-profile
+cookie import.
+Downloads remain blocked. Clear imported cookies only with
+`{"kind":"clear-imported-cookies","confirm":true}`; this clears the shared
+managed Browser partition.
+
+The service controls the visible native Browser rather than another Chromium
+session. Every action uses the exact client, window, tab, and page revision;
+unsupported navigation and stale revisions reject instead of retargeting.
+Permission changes and viewport profiles remain scoped to the selected tab and
+clear with Browser-view teardown.
 
 ## Common checks
 

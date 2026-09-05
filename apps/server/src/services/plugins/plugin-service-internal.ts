@@ -100,7 +100,16 @@ export interface PluginServiceDeps {
   hub: Pick<
     NotificationHub,
     "getDaemonSessionIdForHost" | "notifyPluginSignal" | "notifySystem"
-  >;
+  > &
+    Partial<
+      Pick<
+        NotificationHub,
+        | "listBrowserTabOwners"
+        | "listBrowserTabs"
+        | "openBrowserTab"
+        | "runBrowserControl"
+      >
+    >;
   logger: ServerLogger;
   telemetry: TelemetryService;
   pendingInteractions?: Pick<

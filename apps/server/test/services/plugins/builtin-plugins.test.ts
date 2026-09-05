@@ -226,6 +226,7 @@ describe("builtin plugin reconciliation", () => {
       ["account-pool", "Layers"],
       ["ask-user-question", "MessageQuestion"],
       ["automations", "Clock"],
+      ["browser", "Globe"],
       ["concurrency-limit", "Limitation"],
       ["connect", "Smartphone"],
       ["custom-instructions", "EditFile"],

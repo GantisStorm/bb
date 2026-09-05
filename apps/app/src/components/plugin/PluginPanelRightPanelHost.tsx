@@ -5,6 +5,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -69,6 +70,11 @@ import {
   getDesktopBrowserApi,
   isDesktopBrowserAvailable,
 } from "@/lib/bb-desktop";
+import {
+  registerBrowserControlOwner,
+  waitForBrowserControlTab,
+  type BrowserControlOwnerRegistration,
+} from "@/lib/browser-control-client";
 import { getBrowserUrlHost } from "@/lib/browser-url";
 import { isRoutePath } from "@/lib/route-paths";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
@@ -627,6 +633,69 @@ export function PluginPanelRightPanelHost({
     },
     [openTab, revealPanel, selectPersistedPanelTab],
   );
+  const openControlledBrowserTab = useCallback(
+    async (url: string) => {
+      const tab = openTab({ kind: "browser", url });
+      if (tab?.kind !== "browser") {
+        throw new Error("The visible Browser tab could not be created");
+      }
+      revealPanel();
+      return waitForBrowserControlTab(tab.id);
+    },
+    [openTab, revealPanel],
+  );
+  const activateControlledBrowserTab = useCallback(
+    async (tabId: string) => {
+      activateTab(tabId);
+      revealPanel();
+      return waitForBrowserControlTab(tabId);
+    },
+    [activateTab, revealPanel],
+  );
+  const browserOwnerRegistrationRef =
+    useRef<BrowserControlOwnerRegistration | null>(null);
+  const browserTabsRef = useRef(browserTabs);
+  browserTabsRef.current = browserTabs;
+  useEffect(() => {
+    if (panel === null || !isDesktopBrowserAvailable()) return;
+    const registration = registerBrowserControlOwner({
+      active: isFocused,
+      activateTab: activateControlledBrowserTab,
+      closeTab,
+      openTab: openControlledBrowserTab,
+      ownerId: `plugin-panel:${panelStateId}`,
+      projectId: null,
+      tabs: browserTabsRef.current.map(({ id, title, url }) => ({
+        tabId: id,
+        title,
+        url,
+      })),
+      threadId: null,
+    });
+    browserOwnerRegistrationRef.current = registration;
+    return () => {
+      if (browserOwnerRegistrationRef.current === registration) {
+        browserOwnerRegistrationRef.current = null;
+      }
+      registration.dispose();
+    };
+  }, [
+    activateControlledBrowserTab,
+    closeTab,
+    isFocused,
+    openControlledBrowserTab,
+    panel,
+    panelStateId,
+  ]);
+  useEffect(() => {
+    browserOwnerRegistrationRef.current?.updateTabs(
+      browserTabs.map(({ id, title, url }) => ({
+        tabId: id,
+        title,
+        url,
+      })),
+    );
+  }, [browserTabs]);
   const browserTabIds = useMemo(
     () => new Set(browserTabs.map((tab) => tab.id)),
     [browserTabs],

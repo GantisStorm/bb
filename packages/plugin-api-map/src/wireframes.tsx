@@ -76,6 +76,7 @@ export const APP_SHELL_MARKS = [
   "thread-list",
   "sidebar-footer",
   "thread-header",
+  "browser-actions",
   "timeline-renderers",
   "message-directives",
   "message-actions",
@@ -1044,6 +1045,13 @@ function AppShellWireframeBody({
               label="Plugin thread-header control, left end of the action row"
               className="flex h-6.5 items-center gap-1 px-2"
               showChip={false}
+            >
+              <PluginGlyph className="size-3.5" />
+            </Mark>
+            <Mark
+              id="browser-actions"
+              label="Plugin Browser-tab control"
+              className="flex h-6.5 items-center gap-1 px-2"
             >
               <PluginGlyph className="size-3.5" />
             </Mark>

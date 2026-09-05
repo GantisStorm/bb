@@ -1,7 +1,26 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import { appCommandIdSchema } from "@bb/domain";
 import {
+  bbDesktopBrowserAutomationResultSchema,
+  bbDesktopBrowserClearViewportProfileRequestSchema,
+  bbDesktopBrowserCloseRequestSchema,
+  bbDesktopBrowserCloseResultSchema,
   bbDesktopBrowserFindResultSchema,
+  bbDesktopBrowserImportCookiesResultSchema,
+  bbDesktopBrowserListCookieImportSourcesResultSchema,
+  bbDesktopBrowserPageScriptRequestSchema,
+  bbDesktopBrowserPageCaptureResultSchema,
+  bbDesktopBrowserListFramesResultSchema,
+  bbDesktopBrowserListFramesRequestSchema,
+  bbDesktopBrowserTrustedInputRequestSchema,
+  bbDesktopBrowserTrustedInputResultSchema,
+  bbDesktopBrowserWaitRequestSchema,
+  bbDesktopBrowserWaitResultSchema,
+  bbDesktopBrowserPageScriptResultSchema,
+  bbDesktopBrowserPointerInputRequestSchema,
+  bbDesktopBrowserPointerInputResultSchema,
+  bbDesktopBrowserSetViewportProfileRequestSchema,
+  bbDesktopBrowserViewportProfileResultSchema,
   bbDesktopBrowserOpenTabRequestSchema,
   bbDesktopBrowserScopedOpenTabRequestSchema,
   bbDesktopBrowserTabRefSchema,
@@ -39,11 +58,28 @@ import {
 } from "./desktop-update-ipc.js";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_FRAMES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_SEND_TRUSTED_INPUT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_WAIT_EVENT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_WAIT_EVENT_CHANNEL,
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_RESULT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_PAGE_SCRIPT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_AUTOMATION_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLOSE_TAB_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CAPTURE_PAGE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_VIEWPORT_PROFILE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_SEND_POINTER_INPUT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_SET_VIEWPORT_PROFILE_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_RUN_PAGE_SCRIPT_CHANNEL,
+  BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
   BB_DESKTOP_BROWSER_GO_BACK_CHANNEL,
   BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
   BB_DESKTOP_BROWSER_NAVIGATE_CHANNEL,
@@ -228,12 +264,179 @@ const bbBrowserApi: BbDesktopBrowserApi = {
       bounds: browserViewBoundsAtWindowScale(request.bounds),
     });
   },
+  experimental_browserFrameRuntimeVersion: 1,
+  experimental_browserTrustedInputVersion: 1,
+  experimental_browserEventWaitVersion: 1,
+  async experimental_listBrowserFrames(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_FRAMES_CHANNEL,
+      bbDesktopBrowserListFramesRequestSchema.parse(request),
+    );
+    return bbDesktopBrowserListFramesResultSchema.parse(payload);
+  },
+  async experimental_sendBrowserTrustedInput(request, options) {
+    const signal = options?.signal;
+    if (signal?.aborted === true) {
+      throw new DOMException("Browser trusted input was cancelled", "AbortError");
+    }
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_SEND_TRUSTED_INPUT_CHANNEL,
+      bbDesktopBrowserTrustedInputRequestSchema.parse(request),
+    );
+    return bbDesktopBrowserTrustedInputResultSchema.parse(payload);
+  },
+  async experimental_waitBrowserEvent(request, options) {
+    const signal = options?.signal;
+    if (signal?.aborted === true) {
+      throw new DOMException("Browser event wait was cancelled", "AbortError");
+    }
+    const cancel = (): void => {
+      ipcRenderer.send(
+        BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_WAIT_EVENT_CHANNEL,
+        { tabId: request.tabId, requestId: request.requestId },
+      );
+    };
+    if (typeof signal?.addEventListener === "function") {
+      signal.addEventListener("abort", cancel, { once: true });
+    }
+    try {
+      const payload: unknown = await ipcRenderer.invoke(
+        BB_DESKTOP_BROWSER_EXPERIMENTAL_WAIT_EVENT_CHANNEL,
+        bbDesktopBrowserWaitRequestSchema.parse(request),
+      );
+      return bbDesktopBrowserWaitResultSchema.parse(payload);
+    } finally {
+      if (typeof signal?.removeEventListener === "function") {
+        signal.removeEventListener("abort", cancel);
+      }
+    }
+  },
+  experimental_cancelBrowserEvent(request) {
+    ipcRenderer.send(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_WAIT_EVENT_CHANNEL,
+      request,
+    );
+  },
   setVisible(request): void {
     ipcRenderer.send(BB_DESKTOP_BROWSER_SET_VISIBLE_CHANNEL, request);
   },
   setVisibleWithoutFocus(request): void {
     ipcRenderer.send(
       BB_DESKTOP_BROWSER_SET_VISIBLE_WITHOUT_FOCUS_CHANNEL,
+      request,
+    );
+  },
+  experimental_trustLocalhostCertificate(request): void {
+    ipcRenderer.send(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
+      bbDesktopBrowserTabRefSchema.parse(request),
+    );
+  },
+  experimental_browserPageRuntimeVersion: 1,
+  async experimental_sendBrowserPointerInput(request, options) {
+    const isCancelled = () => options?.signal?.aborted === true;
+    if (isCancelled()) {
+      throw new DOMException(
+        "Browser pointer input was cancelled",
+        "AbortError",
+      );
+    }
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_SEND_POINTER_INPUT_CHANNEL,
+      bbDesktopBrowserPointerInputRequestSchema.parse(request),
+    );
+    if (isCancelled()) {
+      throw new DOMException(
+        "Browser pointer input was cancelled",
+        "AbortError",
+      );
+    }
+    return bbDesktopBrowserPointerInputResultSchema.parse(payload);
+  },
+  async experimental_closeBrowserTab(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CLOSE_TAB_CHANNEL,
+      bbDesktopBrowserCloseRequestSchema.parse(request),
+    );
+    return bbDesktopBrowserCloseResultSchema.parse(payload);
+  },
+  async experimental_setBrowserViewportProfile(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_SET_VIEWPORT_PROFILE_CHANNEL,
+      bbDesktopBrowserSetViewportProfileRequestSchema.parse(request),
+    );
+    return bbDesktopBrowserViewportProfileResultSchema.parse(payload);
+  },
+  async experimental_clearBrowserViewportProfile(request) {
+    await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_VIEWPORT_PROFILE_CHANNEL,
+      bbDesktopBrowserClearViewportProfileRequestSchema.parse(request),
+    );
+  },
+  async experimental_runBrowserPageScript(request, options) {
+    const signal = options?.signal;
+    if (signal?.aborted === true) {
+      throw new DOMException("Browser page script was cancelled", "AbortError");
+    }
+    const cancel = (): void => {
+      ipcRenderer.send(
+        BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_PAGE_SCRIPT_CHANNEL,
+        { tabId: request.tabId, requestId: request.requestId },
+      );
+    };
+    if (typeof signal?.addEventListener === "function") {
+      signal.addEventListener("abort", cancel, { once: true });
+    }
+    try {
+      const payload: unknown = await ipcRenderer.invoke(
+        BB_DESKTOP_BROWSER_EXPERIMENTAL_RUN_PAGE_SCRIPT_CHANNEL,
+        bbDesktopBrowserPageScriptRequestSchema.parse(request),
+      );
+      return bbDesktopBrowserPageScriptResultSchema.parse(payload);
+    } finally {
+      if (typeof signal?.removeEventListener === "function") {
+        signal.removeEventListener("abort", cancel);
+      }
+    }
+  },
+  async experimental_captureBrowserPage(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CAPTURE_PAGE_CHANNEL,
+      request,
+    );
+    return bbDesktopBrowserPageCaptureResultSchema.parse(payload);
+  },
+  async experimental_runBrowserAutomation(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_AUTOMATION_CHANNEL,
+      request,
+    );
+    return bbDesktopBrowserAutomationResultSchema.parse(payload);
+  },
+  async experimental_importCookies(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
+      request,
+    );
+    return bbDesktopBrowserImportCookiesResultSchema.parse(payload);
+  },
+  async experimental_listCookieImportSources(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
+      request,
+    );
+    return bbDesktopBrowserListCookieImportSourcesResultSchema.parse(payload);
+  },
+  async experimental_importCookiesFromBrowser(request) {
+    const payload: unknown = await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
+      request,
+    );
+    return bbDesktopBrowserImportCookiesResultSchema.parse(payload);
+  },
+  async experimental_clearImportedCookies(request) {
+    await ipcRenderer.invoke(
+      BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
       request,
     );
   },
