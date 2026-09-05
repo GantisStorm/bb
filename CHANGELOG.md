@@ -151,6 +151,7 @@ The mobile app is now a WebView shell around the bb web app. One implementation 
 - `bb environment branches` keeps local and remote branch choices discoverable with query and limit controls.
 - `bb plugin new` creates a scaffold with a test that runs and a correct SDK example.
 - Command help and search results honor each command's help metadata.
+- `bb browser open --thread` creates a thread-owned Browser without changing the visible layout and returns its committed page revision.
 
 ### Performance
 

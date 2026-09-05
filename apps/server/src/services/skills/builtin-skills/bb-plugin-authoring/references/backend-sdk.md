@@ -13,6 +13,58 @@ portability.
 that need the singleton personal project use
 `bb.sdk.projects.list({ includePersonal: true })`.
 
+### bb.experimental_browser
+
+`bb.experimental_browser` is the `PluginBrowser` control plane for the user's
+connected, visible BB Browser tabs. It is available only while an audited
+native agent tool's `execute` callback or a plugin CLI command's `run` callback
+is running. Pass that callback's `PluginAgentToolContext` or `PluginCliContext`
+as `context`; do not retain it or start detached Browser work. BB cancels
+unfinished work when the callback returns.
+
+Call `listOwners(context, filter?)` to discover foreground and background
+thread owners, including owners with no tabs. It returns
+`BrowserTabOwnerDescriptor` values. Use `openTab(context, url, options?)` with
+`PluginBrowserOpenOptions` to create the first or a subsequent thread-owned
+tab. If that thread is not mounted, BB runs its native Browser in the background
+without changing the visible app layout. Pass `threadId` and `projectId` to
+select another destination. Specify `clientId` and `windowId` when multiple app
+windows are ambiguous, or `ownerId` to bind an already registered owner. These
+methods and `listTabs` are defined by `PluginBrowser`; `PluginBrowserTabFilter`
+is its tab filter.
+
+Call `listTabs(context, filter?)` before choosing an existing target.
+`PluginBrowserTabFilter` narrows by thread, project, or active state. The call
+returns connected and inactive `BrowserTabDescriptor` values. Only a descriptor
+with `connected: true` has an actionable revision; activate an inactive descriptor
+through the connected tab in the same owner. Copy the exact `clientId`,
+`windowId`, `tabId`, and `navigationEpoch` into `BrowserTabTarget`. Browser
+rejects stale targets rather than substituting another tab.
+
+`run(target, action, { context, timeoutMs? })` accepts a
+`BrowserControlAction` and returns action-specific results such as
+`BrowserWaitResult`; `BrowserWaitCriteria` defines wait actions. It covers
+snapshots; CSS, accessibility, shadow-root, and nested cross-origin frame
+locators; native pointer and form actions; bounded base64 uploads; navigation
+and tab lifecycle; typed waits; screenshots; one-shot dialogs; tab-scoped
+permissions; page storage; native browser-profile cookie import; bounded
+diagnostics; annotations; and scripts. Discover child frames with `list-frames`;
+only use the returned `BrowserFrameDescriptor` and its opaque
+`BrowserFrameTarget`, and discard it after a child-document or main-page
+revision. Profile import returns counts, never cookie values. Clearing imported
+cookies requires `confirm: true` and affects the shared managed Browser
+partition. Downloads remain blocked and can only be observed through a
+`download-blocked` wait. Scripts default to the isolated world; use `main` only
+for page-owned JavaScript state.
+
+For bounded multi-target work, use `bb.sdk.browser.batch` with explicit item
+ids, targets, and actions. It preserves input order, limits concurrency to four,
+and returns an independent success or error for every item.
+
+All failures reject as `BrowserControlError` with a stable `code`, including
+cancellation, timeout, navigation, disconnect, and stale target. Do not retry
+against a different client, window, tab, or revision.
+
 **Area map.** Every area below is reachable from `bb.sdk`. This lists the
 methods, not their arguments — read the bundled `bb-plugin-sdk.d.ts` for exact
 signatures (see "Looking up the exact API").
@@ -24,6 +76,7 @@ signatures (see "Looking up the exact API").
 | `projects`       | `list` `get` `create` `update` `delete` `reorder` `paths` `files` `fileContent` `branches` `commands` `defaultExecutionOptions` `promptHistory` `sidebarBootstrap`; sub-areas `attachments` (`upload` `read` `copy`), `sources` (`add` `update` `delete`)                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `environments`   | `get` `update` `status` `paths` `commit` `archiveThreads` `diff` `diffFile` `diffFiles` `diffBranches` `diffPatch` `pullRequest` `markPullRequestDraft` `markPullRequestReady` `mergePullRequest`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `hosts`          | `list` `get` `update` `delete` `directory` `pathsExist` `pickFolder` `cloneDefaultPath` `createJoinCode` `retryUpdate` `providerCliStatus` `installProviderCli`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `browser`        | `tabs` `open` `control` `batch`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `files`          | `read` `write` `list` `listPaths` `mkdir` `move` `remove` `createPreview`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `terminals`      | `list` `create` `get` `input` `output` `resize` `rename` `restart` `close`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `providers`      | `list` `models`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |

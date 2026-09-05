@@ -948,6 +948,62 @@ malformed runtime targets remain inert in both the app and SDK test runtime.
 7. Confirm `PluginFileOpenerSource.experimental_hostId` can become a stable
    required `hostId` field without breaking older opener implementations.
 
+## Browser-page runtime (`app.slots.experimental_browserAction` and `bb.experimental_browser`)
+
+**What it does.** Lets a plugin contribute one compact Browser-tab action and
+run bounded JSON content scripts against that exact tab. Scripts default to an
+isolated world; an explicit main world exists for page-owned JavaScript state.
+Both worlds expose page DOM/session authority but no Node, Electron, or BB
+app-shell APIs. Script and screenshot results carry a navigation epoch so a
+consumer can reject mixed-revision captures. Frame discovery returns bounded
+opaque frame targets carrying a document epoch; locators and snapshots use those
+targets instead of selector-based frame traversal. Locator-backed click, type,
+and pointer actions use bounded actionability checks and dispatch native input
+only after one final attachment, visibility, geometry, and hit-test check.
+Keyboard actions require an eligible focused target. Waits use typed URL,
+navigation, load-state, popup, request, response, and blocked-download criteria
+with current-versus-next document semantics. The server-side
+`bb.experimental_browser` bridge lists connected client/window/tab revisions,
+including each tab and owner’s thread/project. It discovers foreground and
+background thread owners before they contain a Browser tab. When a destination
+thread is not mounted, it runs that thread's native Browser in the background
+without changing the visible app layout. Explicit thread/project selection can
+target another destination, while implicit calls remain in the caller's thread.
+The bridge runs the same snapshot, click, type, keyboard, scroll, navigation,
+screenshot, wait, and bounded script substrate for approved agent tools and
+audited plugin CLI calls. Requests are concurrent, cancellable, size/time
+limited, disconnect-aware, and never silently retargeted. Discovery, creation,
+and control require the live native-tool or CLI context; they cannot outlive the
+audited timeline row or CLI request.
+
+**Audit before stabilizing.**
+
+1. Confirm isolated-world execution plus explicit main-world opt-in is the
+   right boundary for page-owned framework state, and audit hostile-page
+   tampering of main-world results.
+2. Confirm the source/input/result, screenshot, traversal, and timeout limits
+   against real control and selection consumers. Revisit the hard-timeout
+   fallback, which terminates page execution only after cooperative abort has
+   failed.
+3. Exercise navigation, tab/window/client disconnect, concurrent request,
+   cancellation, and desktop/SPA version-skew behavior before freezing the
+   epoch and targeting contracts.
+4. Confirm Browser-tab discovery stays scoped to exact connected tabs and that
+   plugins should continue resolving ambiguity rather than core choosing a
+   user's page.
+5. Confirm first-tab creation uses the caller's thread/project, can run an
+   unmounted destination in the background without changing the app layout,
+   and never falls back to another thread. Confirm explicit cross-thread
+   selection and client/window ambiguity handling.
+6. Audit the normal agent-tool approval and timeline treatment for full-trust
+   custom scripts. Decide whether particular operations need finer permissions
+   without making the runtime Browser Context-specific.
+7. Validate browser-action overlay leases, stale callback rejection, compact
+   chrome, multiple plugins, split panes, and tab disposal.
+8. Verify actionability cannot retry after native input dispatch, that focused
+   keyboard input uses native key events, and that wait criteria do not expose
+   headers, cookies, bodies, paths, ports, or native objects.
+
 ## Host plugin foundation (`bb.hosts.experimental_client`, `ExperimentalHostClient.experimental_onWorkerExit`, `ExperimentalHostClient.experimental_onSignal`, `ExperimentalHostRpcContext.experimental_retainWorker`, `experimental_defineHostEntry`, and `experimental_createHostEntryHarness`)
 
 **Kept experimental (2026-08-22).** signals and watches have no consumer (decide whether to delete them or keep them experimental separately from calls), none of the lifetime/limit numbers has been measured against a plugin other than keep-awake, and the artifact-contract names (`experimental_apiVersion`, `experimental_signals`, the injected context members) are read by the daemon from installed artifacts, so renaming them needs a dual-name window plus a protocol bump.

@@ -39,6 +39,12 @@ export const BUILTIN_PLUGINS = [
     defaultEnabled: true,
   },
   {
+    name: "browser",
+    pluginId: "browser",
+    defaultEnabled: true,
+    category: "Developer tools",
+  },
+  {
     name: "connect",
     pluginId: "connect",
     defaultEnabled: true,

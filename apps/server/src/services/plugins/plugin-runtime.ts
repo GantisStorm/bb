@@ -1305,6 +1305,14 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       publishSignal: (channel, payload) => {
         deps.hub.notifyPluginSignal(row.id, channel, payload);
       },
+      listBrowserTabs: () => deps.hub.listBrowserTabs?.() ?? [],
+      listBrowserTabOwners: () => deps.hub.listBrowserTabOwners?.() ?? [],
+      openBrowserTab: (args) =>
+        deps.hub.openBrowserTab?.(args) ??
+        Promise.reject(new Error("Browser tab creation is unavailable")),
+      runBrowserControl: (target, action, options) =>
+        deps.hub.runBrowserControl?.({ target, action, ...options }) ??
+        Promise.reject(new Error("Browser control is unavailable")),
       settingsChanged: () => {
         deps.onSettingsChanged?.(row.id);
         settingsChanged();

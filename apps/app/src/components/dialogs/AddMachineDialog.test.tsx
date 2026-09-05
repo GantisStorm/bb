@@ -47,6 +47,7 @@ function connectPlugin(
     source: "builtin:connect",
     rootDir: "/plugins/connect",
     provenance: "builtin",
+    isOrphanedBuiltin: false,
     publisherLabel: "BB Official",
     sourceDisplay: "builtin · connect",
     name: "Remote access",

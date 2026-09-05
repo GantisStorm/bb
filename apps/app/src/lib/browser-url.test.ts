@@ -70,12 +70,17 @@ describe("resolveBrowserAddressInput", () => {
     );
   });
 
-  it("routes a non-http scheme to search rather than navigating to it", () => {
+  it("preserves local file URLs and searches executable or remote schemes", () => {
+    expect(
+      resolveBrowserAddressInput(
+        "file:///Users/test/personal-workspaces/page.html",
+      ),
+    ).toBe("file:///Users/test/personal-workspaces/page.html");
     expect(resolveBrowserAddressInput("javascript:alert(1)")).toBe(
       "https://www.google.com/search?q=javascript%3Aalert(1)",
     );
-    expect(resolveBrowserAddressInput("file:///etc/passwd")).toBe(
-      "https://www.google.com/search?q=file%3A%2F%2F%2Fetc%2Fpasswd",
+    expect(resolveBrowserAddressInput("file://remote-host/etc/passwd")).toBe(
+      "https://www.google.com/search?q=file%3A%2F%2Fremote-host%2Fetc%2Fpasswd",
     );
   });
 

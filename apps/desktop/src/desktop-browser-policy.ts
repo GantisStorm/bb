@@ -1,13 +1,6 @@
-export function isAllowedBrowserUrl(url: string): boolean {
-  if (url === "about:blank") return true;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return parsed.protocol === "http:" || parsed.protocol === "https:";
-}
+import { isAllowedBrowserNavigationUrl } from "@bb/domain";
+
+export const isAllowedBrowserUrl = isAllowedBrowserNavigationUrl;
 
 interface PopupRateDecision {
   allowed: boolean;

@@ -51,6 +51,8 @@ async function fetchClipboardImage(imageUrl: string): Promise<Blob> {
   return convertImageBlobToPng(await response.blob());
 }
 
+const COPY_SUCCESS_TOAST_DURATION_MS = 2_000;
+
 function copyWithEditingCommand(text: string): boolean {
   if (
     typeof document === "undefined" ||
@@ -123,6 +125,46 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
   return copyWithEditingCommand(text);
 }
 
+export async function copyImageToClipboard(image: Blob): Promise<boolean> {
+  if (
+    typeof navigator === "undefined" ||
+    typeof navigator.clipboard?.write !== "function" ||
+    typeof ClipboardItem === "undefined"
+  ) {
+    return false;
+  }
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "image/png": image,
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function copyImageToClipboardWithToast(
+  image: Blob,
+  {
+    successMessage = "Image copied",
+    errorMessage = "Failed to copy image",
+  }: CopyToClipboardOptions = {},
+): Promise<boolean> {
+  const copied = await copyImageToClipboard(image);
+  if (copied) {
+    if (successMessage) {
+      appToast.success(successMessage, {
+        duration: COPY_SUCCESS_TOAST_DURATION_MS,
+      });
+    }
+    return true;
+  }
+  if (errorMessage) appToast.error(errorMessage);
+  return false;
+}
+
 async function copyTextAndImageToClipboard(
   text: string,
   imageUrl: string,
@@ -150,7 +192,6 @@ async function copyTextAndImageToClipboard(
     return false;
   }
 }
-
 export async function copyToClipboardWithToast(
   text: string,
   {
@@ -163,7 +204,11 @@ export async function copyToClipboardWithToast(
     ? await copyTextAndImageToClipboard(text, imageUrl)
     : await copyTextToClipboard(text);
   if (copied) {
-    if (successMessage) appToast.success(successMessage);
+    if (successMessage) {
+      appToast.success(successMessage, {
+        duration: COPY_SUCCESS_TOAST_DURATION_MS,
+      });
+    }
     return true;
   }
   if (errorMessage) appToast.error(errorMessage);

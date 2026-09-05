@@ -462,6 +462,27 @@ const app = await loadPluginApp(
 );
 
 describe("loadPluginApp", () => {
+  it("captures Browser action registrations for renderSlot", async () => {
+    const component = () => null;
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.experimental_browserAction({
+          id: "inspect",
+          title: "Inspect page",
+          component,
+        });
+      }),
+    );
+
+    expect(captured.browserActions).toEqual([
+      {
+        id: "inspect",
+        title: "Inspect page",
+        component,
+      },
+    ]);
+  });
+
   it("captures and validates app overlay registrations", async () => {
     function Overlay() {
       return <div>overlay</div>;
@@ -493,7 +514,6 @@ describe("loadPluginApp", () => {
       ),
     ).rejects.toThrow('slots.experimental_appOverlay: duplicate id "office"');
   });
-
   it("captures and validates sidebar navigation registrations", async () => {
     const captured = await loadPluginApp(
       definePluginApp((builder) => {
@@ -533,7 +553,6 @@ describe("loadPluginApp", () => {
       'slots.experimental_sidebarNavigation: duplicate id "compact"',
     );
   });
-
   it("captures and validates New thread panel action registrations", async () => {
     const run = () => {};
     const captured = await loadPluginApp(

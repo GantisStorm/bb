@@ -68,6 +68,42 @@
         }
       ]
     },
+    "browser-actions": {
+      "groupId": "app-shell",
+      "fidelity": "anchor",
+      "responsiveStrategy": "scale-together",
+      "requiredStates": ["anchor"],
+      "labels": {
+        "anchor": ["Browser tab controls"]
+      },
+      "fixtureClassAnchors": [
+        "flex h-6.5 items-center gap-1 px-2"
+      ],
+      "sources": [
+        {
+          "path": "apps/app/src/components/plugin/PluginBrowserActions.tsx",
+          "anchors": [
+            "export function PluginBrowserActions",
+            "const { browserActions } = usePluginSlots()",
+            "experimental_runPageContentScript"
+          ]
+        },
+        {
+          "path": "apps/app/src/components/secondary-panel/BrowserTabContent.tsx",
+          "anchors": [
+            "<PluginBrowserActions",
+            "onOverlayLeaseChange={handlePluginOverlayLeaseChange}"
+          ]
+        },
+        {
+          "path": "apps/app/src/components/secondary-panel/BrowserTabContent.chrome.test.tsx",
+          "anchors": [
+            "binds generic page scripts to the exact Browser tab",
+            "suppresses and restores the native view for a plugin overlay"
+          ]
+        }
+      ]
+    },
     "sidebar-navigation": {
       "groupId": "app-shell",
       "fidelity": "state",

@@ -1,270 +1,444 @@
-import { writeFile } from "node:fs/promises";
 import { Command } from "commander";
-import type { ExperimentalDesktopBrowserScope } from "@bb/sdk";
-import { action } from "../action.js";
+import {
+  browserBatchRequestSchema,
+  browserControlActionSchema,
+  browserPageLocatorSchema,
+  browserTabTargetSchema,
+  browserWaitCriteriaSchema,
+  type BrowserTabDescriptor,
+  type BrowserTabOwnerDescriptor,
+} from "@bb/server-contract";
+import { action, CliExitError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
+import { renderBorderlessTable } from "../table.js";
+import { outputJson } from "./helpers.js";
 
-interface ScopeOptions {
+interface BrowserJsonOptions {
   json?: boolean;
-  host: string;
-  instance: string;
-  generation: string;
-  thread: string;
 }
-function scope(options: ScopeOptions): ExperimentalDesktopBrowserScope {
-  return {
-    hostId: options.host,
-    instanceId: options.instance,
-    generation: options.generation,
-    threadId: options.thread,
-  };
+
+interface BrowserListOptions extends BrowserJsonOptions {
+  active?: boolean;
+  project?: string;
+  thread?: string;
 }
-function scoped(command: Command) {
-  return command
-    .requiredOption("--host <id>", "Browser host ID")
-    .requiredOption("--instance <id>", "Desktop window instance ID")
-    .requiredOption("--generation <id>", "Desktop connection generation")
-    .requiredOption("--thread <id>", "Owning thread ID")
-    .option("--json", "Print machine-readable JSON output");
+
+interface BrowserOpenOptions extends BrowserJsonOptions {
+  client?: string;
+  owner?: string;
+  project?: string;
+  thread?: string;
+  timeout?: string;
+  url: string;
+  window?: string;
 }
-function print(value: object, options: { json?: boolean }, summary: string) {
-  console.log(options.json ? JSON.stringify(value) : summary);
+
+interface BrowserRunOptions extends BrowserJsonOptions {
+  action: string;
+  client: string;
+  epoch: string;
+  tab: string;
+  timeout?: string;
+  window: string;
+}
+interface BrowserBatchOptions extends BrowserJsonOptions {
+  concurrency?: string;
+  items: string;
+  timeout?: string;
+}
+
+interface BrowserWaitOptions extends BrowserJsonOptions {
+  client: string;
+  document?: string;
+  downloadBlocked?: boolean;
+  epoch: string;
+  loadState?: string;
+  locator?: string;
+  match?: string;
+  method?: string;
+  navigation?: string;
+  popup?: boolean;
+  request?: string;
+  response?: string;
+  sameDocument?: boolean;
+  status?: string;
+  tab: string;
+  text?: string;
+  timeout?: string;
+  url?: string;
+  window: string;
 }
 
 export function registerBrowserCommands(
   program: Command,
   getUrl: () => string,
-) {
+): void {
   const browser = program
     .command("browser")
-    .description("Experimental built-in desktop browser control");
-  const api = () => createCliBbSdk(getUrl()).experimental_desktopBrowsers;
+    .description("Inspect and control visible Browser tabs");
+
   browser
-    .command("instances")
-    .description("List connected desktop windows on a host")
-    .requiredOption("--host <id>", "Browser host ID")
+    .command("list")
+    .description("List visible Browser tabs")
+    .option("--thread <threadId>", "Only tabs owned by this thread")
+    .option("--project <projectId>", "Only tabs owned by this project")
+    .option("--active", "Only active tabs")
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (options: { host: string; json?: boolean }) => {
-        const result = await api().listInstances({ hostId: options.host });
-        print(
-          result,
-          options,
-          result.instances
-            .map(
-              (instance) =>
-                `${instance.instanceId}  ${instance.generation}  ${instance.label}`,
-            )
-            .join("\n") || "No connected desktop windows",
+      action(async (opts: BrowserListOptions) => {
+        const { tabs, owners } = await createCliBbSdk(getUrl()).browser.tabs();
+        const filteredTabs = tabs.filter(
+          (tab) =>
+            (opts.thread === undefined || tab.threadId === opts.thread) &&
+            (opts.project === undefined || tab.projectId === opts.project) &&
+            (!opts.active || tab.active),
+        );
+        const filteredOwners = owners.filter(
+          (owner) =>
+            (opts.thread === undefined || owner.threadId === opts.thread) &&
+            (opts.project === undefined || owner.projectId === opts.project) &&
+            (!opts.active || owner.active),
+        );
+        if (outputJson(opts, { tabs: filteredTabs, owners: filteredOwners })) {
+          return;
+        }
+        printBrowserTabs(filteredTabs);
+        printBrowserOwners(filteredOwners);
+      }),
+    );
+
+  browser
+    .command("open")
+    .description("Open a visible Browser tab for a thread")
+    .requiredOption("--url <url>", "URL to open")
+    .option(
+      "--thread <threadId>",
+      "Destination thread; creates its first Browser tab if needed",
+    )
+    .option(
+      "--project <projectId>",
+      "Target a Browser panel owned by this project",
+    )
+    .option("--client <clientId>", "Target a specific Browser client")
+    .option("--window <windowId>", "Target a specific Browser window")
+    .option("--owner <ownerId>", "Target a specific Browser panel owner")
+    .option("--timeout <seconds>", "Open timeout in seconds", "30")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: BrowserOpenOptions) => {
+        const result = await createCliBbSdk(getUrl()).browser.open({
+          url: opts.url,
+          ...(opts.client === undefined ? {} : { clientId: opts.client }),
+          ...(opts.window === undefined ? {} : { windowId: opts.window }),
+          ...(opts.owner === undefined ? {} : { ownerId: opts.owner }),
+          ...(opts.thread === undefined ? {} : { threadId: opts.thread }),
+          ...(opts.project === undefined ? {} : { projectId: opts.project }),
+          timeoutMs: parseTimeoutMs(opts.timeout),
+        });
+        if (outputJson(opts, result)) return;
+        console.log(
+          [
+            result.target.clientId,
+            result.target.windowId,
+            result.target.tabId,
+            result.target.navigationEpoch,
+          ].join("\t"),
         );
       }),
     );
-  scoped(
-    browser.command("tabs").description("List a thread's native browser tabs"),
-  ).action(
-    action(async (options: ScopeOptions) => {
-      const result = await api().listTabs(scope(options));
-      print(
-        result,
-        options,
-        result.tabs
-          .map(
-            (tab) =>
-              `${tab.tabId}  ${tab.title || tab.url}  ${tab.control?.controllerLabel ?? "Available"}`,
-          )
-          .join("\n") || "No browser tabs in this thread",
-      );
-    }),
-  );
-  scoped(
-    browser
-      .command("create")
-      .description("Create a tab with a separate automation profile"),
-  )
-    .option("--url <url>", "Initial HTTP(S) URL; defaults to about:blank")
-    .option("--reveal", "Show the new native tab")
-    .action(
-      action(
-        async (options: ScopeOptions & { url?: string; reveal?: boolean }) => {
-          const result = await api().createTab({
-            ...scope(options),
-            ...(options.url === undefined ? {} : { url: options.url }),
-            ...(options.reveal ? { presentation: "reveal" } : {}),
-          });
-          print(result, options, `Created tab ${result.tab.tabId}`);
-        },
-      ),
-    );
-  scoped(
-    browser
-      .command("acquire <tabIds...>")
-      .description("Acquire exclusive, expiring control of selected tabs"),
-  )
-    .requiredOption("--controller <label>", "Visible controller name")
-    .option(
-      "--ttl-ms <ms>",
-      "Lease duration; defaults to five minutes, maximum thirty",
-    )
-    .option(
-      "--allow-personal",
-      "Explicitly hand off an existing personal browser profile",
-    )
-    .action(
-      action(
-        async (
-          tabIds: string[],
-          options: ScopeOptions & {
-            controller: string;
-            ttlMs?: string;
-            allowPersonal?: boolean;
-          },
-        ) => {
-          const result = await api().acquireControl({
-            ...scope(options),
-            tabIds,
-            controllerLabel: options.controller,
-            ...(options.ttlMs === undefined
-              ? {}
-              : { ttlMs: Number(options.ttlMs) }),
-            ...(options.allowPersonal ? { allowPersonal: true } : {}),
-          });
-          print(
-            result,
-            options,
-            `Control lease ${result.leaseId} expires ${new Date(result.expiresAt).toISOString()}`,
-          );
-        },
-      ),
-    );
-  scoped(
-    browser
-      .command("connection <leaseId>")
-      .description("Write private CDP connection JSON to a new local file"),
-  )
+
+  browser
+    .command("run")
+    .description("Run a Browser action against an exact tab target")
     .requiredOption(
-      "--output <file>",
-      "New credential file (mode 0600); endpoint works only on browser host",
+      "--client <clientId>",
+      "Browser client ID from `bb browser list`",
     )
+    .requiredOption(
+      "--window <windowId>",
+      "Browser window ID from `bb browser list`",
+    )
+    .requiredOption("--tab <tabId>", "Browser tab ID from `bb browser list`")
+    .requiredOption("--epoch <n>", "Navigation epoch from `bb browser list`")
+    .requiredOption("--action <json>", "Browser action JSON")
+    .option("--timeout <seconds>", "Action timeout in seconds", "30")
+    .option("--json", "Print machine-readable JSON output")
     .action(
-      action(
-        async (leaseId: string, options: ScopeOptions & { output: string }) => {
-          const connection = await api().openConnection({
-            ...scope(options),
-            leaseId,
-          });
-          await writeFile(options.output, JSON.stringify(connection), {
-            mode: 0o600,
-            flag: "wx",
-          });
-          print(
-            {
-              path: options.output,
-              hostId: connection.hostId,
-              expiresAt: connection.expiresAt,
-            },
-            options,
-            `Wrote private connection to ${options.output}`,
-          );
-        },
-      ),
-    );
-  scoped(
-    browser
-      .command("release <leaseId>")
-      .description("Stop automation and keep tabs open"),
-  ).action(
-    action(async (leaseId: string, options: ScopeOptions) => {
-      print(
-        await api().releaseControl({ ...scope(options), leaseId }),
-        options,
-        "Released browser control",
-      );
-    }),
-  );
-  for (const name of ["reveal", "close"] as const) {
-    scoped(
-      browser
-        .command(`${name} <tabId>`)
-        .description(
-          name === "close"
-            ? "Close a native tab"
-            : "Reveal a native tab in its desktop window",
-        ),
-    ).action(
-      action(async (tabId: string, options: ScopeOptions) => {
-        const input = { ...scope(options), tabId };
-        print(
-          await (name === "close"
-            ? api().closeTab(input)
-            : api().revealTab(input)),
-          options,
-          `${name === "close" ? "Closed" : "Revealed"} tab ${tabId}`,
-        );
+      action(async (opts: BrowserRunOptions) => {
+        const actionInput = parseAction(opts.action);
+        const target = browserTabTargetSchema.parse({
+          clientId: opts.client,
+          navigationEpoch: parseNavigationEpoch(opts.epoch),
+          tabId: opts.tab,
+          windowId: opts.window,
+        });
+        const result = await createCliBbSdk(getUrl()).browser.control({
+          action: actionInput,
+          target,
+          timeoutMs: parseTimeoutMs(opts.timeout),
+        });
+        if (outputJson(opts, result)) return;
+        console.log(JSON.stringify(result.value, null, 2));
       }),
+    );
+  browser
+    .command("batch")
+    .description("Run bounded Browser actions against explicit tab targets")
+    .requiredOption("--items <json>", "JSON array of batch items")
+    .option("--concurrency <n>", "Maximum concurrent actions", "4")
+    .option("--timeout <seconds>", "Per-action timeout in seconds", "30")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: BrowserBatchOptions) => {
+        let items: unknown;
+        try {
+          items = JSON.parse(opts.items);
+        } catch {
+          throw new CliExitError("--items must be valid JSON", 1);
+        }
+        const input = browserBatchRequestSchema.safeParse({
+          items,
+          concurrency: Number(opts.concurrency),
+          timeoutMs: parseTimeoutMs(opts.timeout),
+        });
+        if (!input.success) {
+          throw new CliExitError(
+            `Invalid Browser batch: ${input.error.message}`,
+            1,
+          );
+        }
+        const result = await createCliBbSdk(getUrl()).browser.batch(input.data);
+        if (outputJson(opts, result)) return;
+        console.log(JSON.stringify(result.results, null, 2));
+      }),
+    );
+
+  browser
+    .command("wait")
+    .description("Wait for one explicit condition on an exact tab")
+    .requiredOption(
+      "--client <clientId>",
+      "Browser client ID from `bb browser list`",
+    )
+    .requiredOption(
+      "--window <windowId>",
+      "Browser window ID from `bb browser list`",
+    )
+    .requiredOption("--tab <tabId>", "Browser tab ID from `bb browser list`")
+    .requiredOption("--epoch <n>", "Navigation epoch from `bb browser list`")
+    .option("--locator <json>", "Locator became available")
+    .option("--text <text>", "Visible page text appeared")
+    .option("--url <url>", "URL matched")
+    .option("--navigation <start|commit>", "Navigation phase occurred")
+    .option(
+      "--same-document",
+      "Require a same-document navigation (otherwise cross-document)",
+    )
+    .option(
+      "--load-state <state>",
+      "Load state: domcontentloaded, load, or networkidle",
+    )
+    .option("--document <current|next>", "Load-state document", "current")
+    .option("--popup", "A new Browser tab opened")
+    .option("--request <url>", "Request URL matched")
+    .option("--response <url>", "Response URL matched")
+    .option("--method <method>", "Request or response method")
+    .option("--status <code>", "Response status code")
+    .option("--match <exact|glob>", "URL matching mode", "exact")
+    .option("--download-blocked", "A download was blocked")
+    .option("--timeout <seconds>", "Wait timeout in seconds", "30")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (opts: BrowserWaitOptions) => {
+        const criteriaFlags = [
+          opts.locator !== undefined,
+          opts.text !== undefined,
+          opts.url !== undefined,
+          opts.navigation !== undefined,
+          opts.loadState !== undefined,
+          opts.popup === true,
+          opts.request !== undefined,
+          opts.response !== undefined,
+          opts.downloadBlocked === true,
+        ];
+        if (criteriaFlags.filter(Boolean).length !== 1) {
+          throw new CliExitError("Specify exactly one wait criterion", 1);
+        }
+        const match = opts.match ?? "exact";
+        const status =
+          opts.status === undefined ? undefined : Number(opts.status);
+        let criteriaInput: unknown;
+        if (opts.locator !== undefined) {
+          criteriaInput = {
+            kind: "locator",
+            locator: parseLocator(opts.locator),
+          };
+        } else if (opts.text !== undefined) {
+          criteriaInput = { kind: "text", text: opts.text };
+        } else if (opts.url !== undefined) {
+          criteriaInput = { kind: "url", url: opts.url, match };
+        } else if (opts.navigation !== undefined) {
+          criteriaInput = {
+            kind: "navigation",
+            phase: opts.navigation,
+            sameDocument: opts.sameDocument === true,
+          };
+        } else if (opts.loadState !== undefined) {
+          criteriaInput = {
+            kind: "load-state",
+            document: opts.document ?? "current",
+            state: opts.loadState,
+          };
+        } else if (opts.popup === true) {
+          criteriaInput = { kind: "popup" };
+        } else if (opts.request !== undefined) {
+          criteriaInput = {
+            kind: "request",
+            url: opts.request,
+            match,
+            ...(opts.method === undefined ? {} : { method: opts.method }),
+          };
+        } else if (opts.response !== undefined) {
+          criteriaInput = {
+            kind: "response",
+            url: opts.response,
+            match,
+            ...(opts.method === undefined ? {} : { method: opts.method }),
+            ...(status === undefined ? {} : { status }),
+          };
+        } else {
+          criteriaInput = { kind: "download-blocked" };
+        }
+        const parsedCriteria =
+          browserWaitCriteriaSchema.safeParse(criteriaInput);
+        if (!parsedCriteria.success) {
+          throw new CliExitError(
+            `Invalid Browser wait criterion: ${parsedCriteria.error.message}`,
+            1,
+          );
+        }
+        const timeoutMs = parseTimeoutMs(opts.timeout);
+        const target = browserTabTargetSchema.parse({
+          clientId: opts.client,
+          navigationEpoch: parseNavigationEpoch(opts.epoch),
+          tabId: opts.tab,
+          windowId: opts.window,
+        });
+        const result = await createCliBbSdk(getUrl()).browser.control({
+          action: { kind: "wait", criteria: parsedCriteria.data },
+          target,
+          timeoutMs,
+        });
+        if (outputJson(opts, result)) return;
+        console.log(JSON.stringify(result.value, null, 2));
+      }),
+    );
+}
+
+function parseAction(value: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new CliExitError("--action must be valid JSON", 1);
+  }
+  const result = browserControlActionSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new CliExitError(
+      `Invalid Browser action: ${result.error.message}`,
+      1,
     );
   }
-  scoped(
-    browser
-      .command("capture <tabId>")
-      .description("Save a native tab screenshot without focusing it"),
-  )
-    .requiredOption("--output <file>", "New local JPEG file")
-    .action(
-      action(
-        async (tabId: string, options: ScopeOptions & { output: string }) => {
-          const capture = await api().captureTab({ ...scope(options), tabId });
-          await writeFile(
-            options.output,
-            Buffer.from(capture.base64, "base64"),
-            { flag: "wx", mode: 0o600 },
-          );
-          print(
-            { path: options.output, mimeType: capture.mimeType },
-            options,
-            `Saved screenshot to ${options.output}`,
-          );
-        },
-      ),
+  return result.data;
+}
+function parseLocator(value: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new CliExitError("--locator must be valid JSON", 1);
+  }
+  const result = browserPageLocatorSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new CliExitError(
+      `Invalid Browser locator: ${result.error.message}`,
+      1,
     );
-  scoped(
-    browser
-      .command("watch")
-      .description(
-        "Print changed tab snapshots every two seconds until interrupted",
-      ),
-  ).action(
-    action(async (options: ScopeOptions) => {
-      await new Promise<void>((resolve, reject) => {
-        const subscription = api().subscribe({
-          ...scope(options),
-          onChange: (result) =>
-            print(
-              result,
-              options,
-              result.tabs
-                .map(
-                  (tab) =>
-                    `${tab.tabId}  ${tab.title || tab.url}  ${tab.control?.controllerLabel ?? "Available"}`,
-                )
-                .join("\n") || "No browser tabs in this thread",
-            ),
-          onError(error) {
-            cleanup();
-            reject(error);
-          },
-        });
-        const stop = () => {
-          cleanup();
-          resolve();
-        };
-        function cleanup() {
-          subscription.dispose();
-          process.off("SIGINT", stop);
-          process.off("SIGTERM", stop);
-        }
-        process.once("SIGINT", stop);
-        process.once("SIGTERM", stop);
-      });
-    }),
+  }
+  return result.data;
+}
+
+function parseNavigationEpoch(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new CliExitError("--epoch must be a non-negative integer", 1);
+  }
+  return parsed;
+}
+
+function parseTimeoutMs(value: string | undefined): number {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new CliExitError("--timeout must be a positive number of seconds", 1);
+  }
+  return Math.round(seconds * 1_000);
+}
+
+function printBrowserTabs(tabs: readonly BrowserTabDescriptor[]): void {
+  if (tabs.length === 0) {
+    console.log("No visible Browser tabs.");
+    return;
+  }
+  console.log(
+    renderBorderlessTable(
+      {
+        colWidths: [16, 16, 18, 24, 24, 10, 8, 32, 34],
+        head: [
+          "CLIENT",
+          "WINDOW",
+          "TAB",
+          "THREAD",
+          "PROJECT",
+          "STATUS",
+          "EPOCH",
+          "TITLE",
+          "URL",
+        ],
+        trimTrailingWhitespace: true,
+      },
+      tabs.map((tab) => [
+        tab.clientId,
+        tab.windowId,
+        tab.tabId,
+        tab.threadId ?? "",
+        tab.projectId ?? "",
+        tab.connected ? (tab.active ? "active" : "connected") : "inactive",
+        String(tab.navigationEpoch),
+        tab.title ?? "",
+        tab.url,
+      ]),
+    ),
+  );
+}
+
+function printBrowserOwners(
+  owners: readonly BrowserTabOwnerDescriptor[],
+): void {
+  if (owners.length === 0) return;
+  console.log(
+    renderBorderlessTable(
+      {
+        colWidths: [16, 16, 22, 24, 24],
+        head: ["CLIENT", "WINDOW", "OWNER", "THREAD", "PROJECT"],
+        trimTrailingWhitespace: true,
+      },
+      owners.map((owner) => [
+        owner.clientId,
+        owner.windowId,
+        owner.ownerId,
+        owner.threadId ?? "",
+        owner.projectId ?? "",
+      ]),
+    ),
   );
 }

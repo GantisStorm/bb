@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import {
+  createBrowserFixedPanelTab,
   createEmptyFixedPanelTabsState,
   createPluginPanelFixedPanelTab,
   createTerminalFixedPanelTab,
@@ -65,6 +66,28 @@ interface TestNewThreadPanelActionRegistration {
   pluginId: string;
   generation: number;
 }
+interface BrowserControlTabDescriptor {
+  tabId: string;
+  title: string | null;
+  url: string;
+}
+
+interface BrowserControlOwnerArgs {
+  active: boolean;
+  ownerId: string;
+  projectId: string | null;
+  tabs: readonly BrowserControlTabDescriptor[];
+  threadId: string | null;
+}
+
+interface BrowserControlOwnerRecord {
+  args: BrowserControlOwnerArgs;
+  updateTabs: (tabs: readonly BrowserControlTabDescriptor[]) => void;
+}
+
+const browserControlState = vi.hoisted(() => ({
+  owners: [] as BrowserControlOwnerRecord[],
+}));
 
 const browserState = vi.hoisted(() => ({ available: false }));
 const viewportState = vi.hoisted(() => ({ isCompactViewport: false }));
@@ -230,6 +253,15 @@ vi.mock("@/lib/bb-desktop", () => ({
   getDesktopBrowserApi: () => null,
   isDesktopBrowserAvailable: () => browserState.available,
 }));
+vi.mock("@/lib/browser-control-client", () => ({
+  registerBrowserControlOwner: vi.fn((args: BrowserControlOwnerArgs) => {
+    const updateTabs = vi.fn();
+    browserControlState.owners.push({ args, updateTabs });
+    return { dispose: vi.fn(), updateTabs };
+  }),
+  waitForBrowserControlTab: vi.fn(),
+}));
+
 
 vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
   useCreateTerminal: () => ({
@@ -703,6 +735,7 @@ describe("PluginPanelRightPanelHost", () => {
     secondaryPanelState.showsCollapseControl = false;
     secondaryPanelState.tabKinds = [];
     localStorage.clear();
+    browserControlState.owners = [];
     resetFixedPanelTabsStateForTest();
   });
 
@@ -1225,6 +1258,72 @@ describe("PluginPanelRightPanelHost", () => {
     expect(
       await screen.findByRole("button", { name: "Show right panel" }),
     ).toBeTruthy();
+  });
+
+  it("advertises every restored Browser tab through its panel owner", async () => {
+    browserState.available = true;
+    const firstTab = createBrowserFixedPanelTab({
+      environmentId: null,
+      url: "https://first.example.com",
+    });
+    const secondTab = createBrowserFixedPanelTab({
+      environmentId: null,
+      url: "https://second.example.com",
+    });
+    const panelStateId = getPluginPagePanelStateId({
+      panelPath: "board",
+      pluginId: "demo",
+    });
+    localStorage.setItem(
+      getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
+      serializeFixedPanelTabsState({
+        state: createEmptyFixedPanelTabsState({
+          lastUsedAt: Date.now(),
+          secondary: {
+            activeTabId: secondTab.id,
+            isOpen: true,
+            tabs: [firstTab, secondTab],
+          },
+        }),
+      }),
+    );
+
+    renderHost();
+
+    await waitFor(() => expect(browserControlState.owners).not.toHaveLength(0));
+    const owner = browserControlState.owners.at(-1);
+    expect(owner?.args).toMatchObject({
+      active: true,
+      ownerId: `plugin-panel:${panelStateId}`,
+      projectId: null,
+      threadId: null,
+    });
+    expect(owner?.args.tabs).toEqual([
+      {
+        tabId: firstTab.id,
+        title: null,
+        url: "https://first.example.com",
+      },
+      {
+        tabId: secondTab.id,
+        title: null,
+        url: "https://second.example.com",
+      },
+    ]);
+    await waitFor(() =>
+      expect(owner?.updateTabs).toHaveBeenLastCalledWith([
+        {
+          tabId: firstTab.id,
+          title: null,
+          url: "https://first.example.com",
+        },
+        {
+          tabId: secondTab.id,
+          title: null,
+          url: "https://second.example.com",
+        },
+      ]),
+    );
   });
 
   it("opens Browser without a plugin allowlist", async () => {

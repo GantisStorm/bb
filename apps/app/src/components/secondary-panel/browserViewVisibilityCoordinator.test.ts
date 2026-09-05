@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BbDesktopBrowserApi } from "@bb/desktop-contract";
 import { createNoopDesktopBrowserApi } from "@/test/bb-desktop-test-utils";
+import {
+  resetDesktopBrowserViewAperture,
+  updateDesktopBrowserViewAperture,
+} from "@/lib/desktop-browser-view-aperture";
 import {
   createBrowserViewVisibilityCoordinator,
   destroyPersistedBrowserViewsForEnvironment,
@@ -37,6 +43,9 @@ function createRecordingApi(): RecordingApi {
 
 afterEach(() => {
   resetBrowserViewPersistence();
+  resetDesktopBrowserViewAperture();
+  document.body.innerHTML = "";
+  vi.unstubAllGlobals();
 });
 
 describe("browserViewVisibilityCoordinator", () => {
@@ -69,6 +78,44 @@ describe("browserViewVisibilityCoordinator", () => {
     coordinator.show("a", () => order.push("bounds:a"));
 
     expect(order).toEqual(["bounds:a", "show:a"]);
+  });
+
+  it("paints the closed aperture before hiding the native view", () => {
+    document.body.innerHTML = '<div id="root"></div>';
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      (callback: FrameRequestCallback): number => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      },
+    );
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const visibility: boolean[] = [];
+    const api: BbDesktopBrowserApi = {
+      ...createNoopDesktopBrowserApi(),
+      setVisible(request) {
+        if (!request.visible) visibility.push(request.visible);
+      },
+    };
+    const coordinator = createBrowserViewVisibilityCoordinator(api);
+    coordinator.show("a", () => {
+      updateDesktopBrowserViewAperture({
+        bounds: { height: 300, width: 500, x: 0, y: 0 },
+        tabId: "a",
+      });
+    });
+
+    coordinator.cover("a");
+
+    expect(
+      document.body.hasAttribute("data-desktop-browser-view-aperture"),
+    ).toBe(false);
+    expect(visibility).toEqual([]);
+    frameCallbacks.shift()?.(0);
+    expect(visibility).toEqual([]);
+    frameCallbacks.shift()?.(16);
+    expect(visibility).toEqual([false]);
   });
 
   it("does not re-hide when re-showing the already-visible tab", () => {

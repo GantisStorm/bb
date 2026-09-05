@@ -11,12 +11,10 @@ import {
   desktopBrowserChangedSchema,
 } from "@bb/host-daemon-contract";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { BbDesktopBrowserViewBounds } from "@bb/desktop-contract";
-import { createDesktopBrowserCdpAdapter } from "../src/desktop-browser-cdp-adapter.js";
-import { createDesktopBrowserBroker } from "../src/desktop-browser-broker.js";
-import { createDesktopBrowserBrokerClient } from "../src/desktop-browser-broker-client.js";
-import { captureDesktopBrowserPage } from "../src/desktop-browser-capture.js";
-import type { DesktopBrowserCdpPage } from "../src/desktop-browser-cdp.js";
+import type {
+  BbDesktopBrowserImportCookiesRequest,
+  BbDesktopBrowserViewBounds,
+} from "@bb/desktop-contract";
 import {
   createDesktopBrowserViewManager as createProductionDesktopBrowserViewManager,
   isAllowedBrowserPermission,
@@ -54,6 +52,13 @@ interface FakeNavigationEvent extends FakePreventableEvent {
 }
 
 type FakeVoidWebContentsListener = () => void;
+type FakeConsoleMessageListener = (
+  event: FakeWebContentsEvent,
+  level: number,
+  message: string,
+  line: number,
+  sourceId: string,
+) => void;
 
 type FakeWillFrameNavigateListener = (event: FakeNavigationEvent) => void;
 
@@ -151,9 +156,11 @@ interface FakeFindInPageCall {
 interface FakeWebContentsEventMap {
   destroyed: FakeVoidWebContentsListener;
   focus: FakeVoidWebContentsListener;
+  "console-message": FakeConsoleMessageListener;
   "before-input-event": FakeBeforeInputListener;
   "will-frame-navigate": FakeWillFrameNavigateListener;
   "will-redirect": FakeWillRedirectListener;
+  "dom-ready": FakeVoidWebContentsListener;
   "did-start-loading": FakeVoidWebContentsListener;
   "did-stop-loading": FakeVoidWebContentsListener;
   "did-finish-load": FakeVoidWebContentsListener;
@@ -245,10 +252,10 @@ type FakeWindowOpenHandler = (
 
 const electronMock = vi.hoisted(() => {
   interface FakeNativeImage {
+    getSize(): { height: number; width: number };
     isEmpty(): boolean;
     toJPEG(quality: number): Buffer;
-    getSize(): { width: number; height: number };
-    resize(size: { width: number; height: number }): FakeNativeImage;
+    toPNG(): Buffer;
   }
 
   interface FakeDidFailLoadArgs {
@@ -257,6 +264,15 @@ const electronMock = vi.hoisted(() => {
     isMainFrame: boolean;
     validatedURL: string;
   }
+
+  type FakeCertificateErrorListener = (
+    event: FakePreventableEvent,
+    webContents: { id: number },
+    url: string,
+    error: string,
+    certificate: object,
+    callback: (trusted: boolean) => void,
+  ) => void;
 
   type FakeWebContentsListeners = {
     [TEventName in keyof FakeWebContentsEventMap]: Array<
@@ -300,68 +316,85 @@ const electronMock = vi.hoisted(() => {
   const fakeWebContentsEvent: FakeWebContentsEvent = {};
 
   const fakeCapturedImage: FakeNativeImage = {
+    getSize: () => ({ width: 1_200, height: 800 }),
     isEmpty: () => false,
     toJPEG: () => Buffer.from("jpeg-bytes"),
-    getSize: () => ({ width: 1280, height: 720 }),
-    resize: (size) => ({ ...fakeCapturedImage, getSize: () => size }),
+    toPNG: () => Buffer.from("png-bytes"),
   };
 
+  interface FakeDebuggerCommand {
+    method: string;
+    params:
+      | ({ cookies?: readonly object[] } & Record<string, unknown>)
+      | undefined;
+  }
+
   class FakeDebugger {
-    private attached = false;
-    private readonly listeners: {
-      [TEventName in keyof FakeDebuggerEventMap]: Array<
-        FakeDebuggerEventMap[TEventName]
-      >;
-    } = { detach: [], message: [] };
+    public attached = false;
     public readonly attachCalls: string[] = [];
     public detachCalls = 0;
-    public sendCommand = vi
-      .fn<
-        (
-          method: string,
-          params: Parameters<DesktopBrowserCdpPage["send"]>[1],
-          sessionId?: string,
-        ) => Promise<unknown>
-      >()
-      .mockResolvedValue({});
+    public readonly sendCommandCalls: FakeDebuggerCommand[] = [];
+    public getFrameTreeResult?: object;
+    private readonly messageListeners: Array<
+      (
+        event: FakeWebContentsEvent,
+        method: string,
+        params: Record<string, unknown>,
+      ) => void
+    > = [];
+
+    on(
+      _eventName: "message",
+      listener: (
+        event: FakeWebContentsEvent,
+        method: string,
+        params: Record<string, unknown>,
+      ) => void,
+    ): void {
+      this.messageListeners.push(listener);
+    }
+
+    emitMessage(method: string, params: Record<string, unknown>): void {
+      for (const listener of this.messageListeners) {
+        listener(fakeWebContentsEvent, method, params);
+      }
+    }
+
+    attach(protocolVersion: string): void {
+      this.attached = true;
+      this.attachCalls.push(protocolVersion);
+    }
+
+    detach(): void {
+      this.attached = false;
+      this.detachCalls += 1;
+    }
 
     isAttached(): boolean {
       return this.attached;
     }
 
-    attach(protocolVersion: string): void {
-      this.attachCalls.push(protocolVersion);
-      this.attached = true;
-    }
-
-    detach(): void {
-      this.detachCalls += 1;
-      this.attached = false;
-      for (const listener of [...this.listeners.detach]) listener();
-    }
-
-    on<TEventName extends keyof FakeDebuggerEventMap>(
-      event: TEventName,
-      listener: FakeDebuggerEventMap[TEventName],
-    ): void {
-      this.listeners[event].push(listener);
-    }
-
-    off<TEventName extends keyof FakeDebuggerEventMap>(
-      event: TEventName,
-      listener: FakeDebuggerEventMap[TEventName],
-    ): void {
-      const index = this.listeners[event].indexOf(listener);
-      if (index !== -1) this.listeners[event].splice(index, 1);
-    }
-
-    emitMessage(method: string, params: unknown, sessionId: string): void {
-      for (const listener of [...this.listeners.message]) {
-        listener(fakeWebContentsEvent, method, params, sessionId);
+    async sendCommand(
+      method: string,
+      params?: Record<string, unknown>,
+    ): Promise<object> {
+      this.sendCommandCalls.push({ method, params });
+      if (method === "Page.getLayoutMetrics") {
+        return { cssContentSize: { width: 1_200, height: 2_400 } };
       }
+      if (method === "Page.captureScreenshot") {
+        return { data: Buffer.from("full-page").toString("base64") };
+      }
+      if (method === "Page.getFrameTree") {
+        return this.getFrameTreeResult ?? {};
+      }
+      if (method === "DOM.getFrameOwner") return { backendNodeId: 1 };
+      if (method === "DOM.getBoxModel") {
+        return { model: { content: [20, 30, 120, 30, 120, 80, 20, 80] } };
+      }
+      return {};
     }
   }
-
   class FakeWebContents {
     public readonly debugger = new FakeDebugger();
     private backgroundThrottling = true;
@@ -375,6 +408,7 @@ const electronMock = vi.hoisted(() => {
     public canGoBackResult = false;
     public canGoForwardResult = false;
     public destroyed = false;
+    public readonly debugger = new FakeDebugger();
     public focusCalls = 0;
     public readonly goBackCalls: string[] = [];
     public readonly goForwardCalls: string[] = [];
@@ -384,11 +418,13 @@ const electronMock = vi.hoisted(() => {
     public readonly findInPageCalls: FakeFindInPageCall[] = [];
     public readonly stopFindInPageCalls: string[] = [];
     public reloadCalls = 0;
+    public readonly sentInputEvents: Array<Record<string, unknown>> = [];
     public readonly pendingCaptureResolvers: Array<
       (image: FakeNativeImage) => void
     > = [];
     private readonly listeners: FakeWebContentsListeners = {
-      destroyed: [],
+      "console-message": [],
+      "dom-ready": [],
       focus: [],
       "before-input-event": [],
       "will-frame-navigate": [],
@@ -506,6 +542,9 @@ const electronMock = vi.hoisted(() => {
     reload(): void {
       this.reloadCalls += 1;
     }
+    sendInputEvent(event: Record<string, unknown>): void {
+      this.sentInputEvents.push(event);
+    }
 
     setWindowOpenHandler(handler: FakeWindowOpenHandler): void {
       this.windowOpenHandler = handler;
@@ -568,13 +607,16 @@ const electronMock = vi.hoisted(() => {
       }
     }
 
-    emitDidNavigateInPage(url: string): void {
-      this.url = url;
-      for (const listener of this.listeners["did-navigate-in-page"]) {
-        listener(fakeWebContentsEvent, url, true);
+    emitDidStartNavigation(isMainFrame = true): void {
+      for (const listener of this.listeners["did-start-navigation"]) {
+        (listener as (...args: unknown[]) => void)(
+          fakeWebContentsEvent,
+          this.url,
+          false,
+          isMainFrame,
+        );
       }
     }
-
     emitPageTitleUpdated(title: string): boolean {
       this.title = title;
       const event = new FakePreventableEventImpl();
@@ -583,7 +625,6 @@ const electronMock = vi.hoisted(() => {
       }
       return event.defaultPrevented;
     }
-
     emitWillFrameNavigate(
       url: string,
       isMainFrame: boolean,
@@ -705,9 +746,68 @@ const electronMock = vi.hoisted(() => {
   }
 
   class FakeSession {
+    public clearCacheCalls = 0;
+    public readonly clearStorageDataCalls: Array<
+      { storages: string[] } | undefined
+    > = [];
+    public flushStoreCalls = 0;
+    public readonly cookieSetCalls: Record<string, unknown>[] = [];
+    public readonly cookieGetResults: Array<{
+      domain?: string;
+      name: string;
+      path?: string;
+      secure?: boolean;
+    }> = [];
+    public readonly cookieRemoveCalls: Array<{ name: string; url: string }> = [];
+    public readonly cookies = {
+      flushStore: async (): Promise<void> => {
+        this.flushStoreCalls += 1;
+      },
+      get: async (): Promise<typeof this.cookieGetResults> =>
+        this.cookieGetResults,
+      remove: async (url: string, name: string): Promise<void> => {
+        this.cookieRemoveCalls.push({ name, url });
+      },
+      set: async (details: Record<string, unknown>): Promise<void> => {
+        this.cookieSetCalls.push(details);
+      },
+    };
+    async clearCache(): Promise<void> {
+      this.clearCacheCalls += 1;
+    }
+    async clearStorageData(options?: { storages: string[] }): Promise<void> {
+      this.clearStorageDataCalls.push(options);
+    }
+    public readonly webRequest = {
+      onBeforeRequest: (
+        _listener: (
+          details: { url: string; method: string; webContentsId?: number },
+          callback: (response: Record<string, never>) => void,
+        ) => void,
+      ): void => {},
+      onCompleted: (
+        _listener: (details: {
+          method: string;
+          statusCode: number;
+          url: string;
+          webContentsId?: number;
+        }) => void,
+      ): void => {},
+      onErrorOccurred: (
+        _listener: (details: {
+          error: string;
+          method: string;
+          url: string;
+          webContentsId?: number;
+        }) => void,
+      ): void => {},
+    };
     public readonly willDownloadListeners: FakeSessionListener[] = [];
     public permissionCheckHandler: FakePermissionCheckHandler | null = null;
     public permissionRequestHandler: FakePermissionRequestHandler | null = null;
+    public certificateVerifyProc:
+      | ((request: { hostname: string }, callback: (result: number) => void) => void)
+      | null = null;
     on(eventName: "will-download", listener: FakeSessionListener): void {
       this.willDownloadListeners.push(listener);
     }
@@ -719,14 +819,25 @@ const electronMock = vi.hoisted(() => {
     setPermissionRequestHandler(handler: FakePermissionRequestHandler): void {
       this.permissionRequestHandler = handler;
     }
+
+    setCertificateVerifyProc(
+      handler: (
+        request: { hostname: string },
+        callback: (result: number) => void,
+      ) => void,
+    ): void {
+      this.certificateVerifyProc = handler;
+    }
   }
 
   const fakeSessions: FakeSession[] = [];
   const fakeViews: FakeWebContentsView[] = [];
+  const certificateErrorListeners: FakeCertificateErrorListener[] = [];
   const fakeWindows: FakeBrowserWindow[] = [];
 
   return {
     fakeCapturedImage,
+    certificateErrorListeners,
     fakeSessions,
     fakeViews,
     fakeWindows,
@@ -754,12 +865,18 @@ const electronMock = vi.hoisted(() => {
         return fakeSession;
       },
     },
+    app: {
+      on(_eventName: "certificate-error", listener: FakeCertificateErrorListener): void {
+        certificateErrorListeners.push(listener);
+      },
+    },
   };
 });
 
 vi.mock("electron", () => ({
   BrowserWindow: electronMock.FakeBrowserWindow,
   WebContentsView: electronMock.FakeWebContentsView,
+  app: electronMock.app,
   session: electronMock.session,
   nativeImage: { createFromBuffer: () => electronMock.fakeCapturedImage },
 }));
@@ -791,10 +908,15 @@ class FakeHostWebContents implements DesktopBrowserHostWebContents {
 
 class FakeContentView implements DesktopBrowserHostContentView {
   public readonly addedViews: WebContentsView[] = [];
+  public readonly addCalls: Array<{
+    index: number | undefined;
+    view: WebContentsView;
+  }> = [];
   public readonly removedViews: WebContentsView[] = [];
 
-  addChildView(view: WebContentsView): void {
+  addChildView(view: WebContentsView, index?: number): void {
     this.addedViews.push(view);
+    this.addCalls.push({ index, view });
   }
 
   removeChildView(view: WebContentsView): void {
@@ -824,6 +946,7 @@ class FakeHostWindow implements DesktopBrowserHostWindow {
 
 beforeEach(() => {
   vi.useRealTimers();
+  electronMock.certificateErrorListeners.length = 0;
   electronMock.fakeSessions.length = 0;
   electronMock.fakeViews.length = 0;
   electronMock.fakeWindows.length = 0;
@@ -891,6 +1014,17 @@ function requireFakeView(
     throw new Error("Expected the browser view to be created.");
   }
   return view;
+}
+
+function requireFakeSession(
+  index: number,
+): (typeof electronMock.fakeSessions)[number] {
+  const fakeSession = electronMock.fakeSessions[index];
+  expect(fakeSession).toBeDefined();
+  if (fakeSession === undefined) {
+    throw new Error("Expected the browser session to be created.");
+  }
+  return fakeSession;
 }
 
 function createRendererRecoveryFixture(webContentsId: number) {
@@ -1407,644 +1541,540 @@ describe("DesktopBrowserCdpAdapter", () => {
 });
 
 describe("DesktopBrowserViewManager", () => {
-  it("preserves same-server reconnect tabs but clears them before a different server registration", async () => {
-    const { manager, hostWindow } = createRendererRecoveryFixture(91);
-    const broker = createDesktopBrowserBroker({
-      manager,
-      product: "Chrome/test",
-    });
-    broker.registerWindow(
-      Object.assign(hostWindow, {
-        focus() {},
-        show() {},
-        restore() {},
-        isMinimized: () => false,
-      }),
-    );
-    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    await once(server, "listening");
-    const address = server.address();
-    if (typeof address === "string" || address === null)
-      throw new Error("Expected TCP address");
-    const dataDir = await mkdtemp(join(tmpdir(), "bb-native-origin-"));
-    const frameSchema = z.union([
-      desktopBrowserRegistrationSchema,
-      desktopBrowserChangedSchema,
-    ]);
-    const messages: Array<{
-      peer: number;
-      frame: z.infer<typeof frameSchema>;
-    }> = [];
-    let peers = 0;
-    server.on("connection", (socket) => {
-      const peer = ++peers;
-      socket.on("message", (data) =>
-        messages.push({
-          peer,
-          frame: frameSchema.parse(JSON.parse(data.toString())),
-        }),
-      );
-    });
-    let serverUrl = "https://first.example";
-    const writeDescriptor = () =>
-      writeFile(
-        join(dataDir, DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE),
-        JSON.stringify({
-          version: 1,
-          hostId: "host-1",
-          serverUrl,
-          url: `ws://127.0.0.1:${address.port}/desktop-browser`,
-          token: "a".repeat(64),
-        }),
-        { mode: 0o600 },
-      );
-    await writeDescriptor();
-    const client = createDesktopBrowserBrokerClient({
-      broker,
-      dataDir,
-      getServerUrl: () => serverUrl,
-    });
-    const hasOriginalTab = (peer: number) =>
-      messages.some(
-        (message) =>
-          message.peer === peer &&
-          message.frame.type === "desktop-browser.changed" &&
-          message.frame.tabs.some((tab) => tab.tabId === "browser:a"),
-      );
-    try {
-      await vi.waitFor(() => expect(hasOriginalTab(1)).toBe(true));
-      client.reconnect();
-      await vi.waitFor(() => expect(hasOriginalTab(2)).toBe(true));
-      expect(
-        manager.listTabs({ hostWebContentsId: 91, threadId: "thread-1" }),
-      ).toHaveLength(1);
-      const target = broker.getTarget(91);
-      if (!target) throw new Error("Expected connected desktop");
-      await broker.execute({
-        type: "desktop.browser.acquire_control",
-        instanceId: target.instanceId,
-        generation: target.generation,
-        threadId: "thread-1",
-        leaseId: "origin-lease",
-        tabIds: ["browser:a"],
-        controllerLabel: "Test",
-        expiresAt: Date.now() + 60_000,
-      });
-      serverUrl = "https://second.example";
-      await writeDescriptor();
-      client.reconnect();
-      expect(
-        manager.listTabs({ hostWebContentsId: 91, threadId: null }),
-      ).toEqual([]);
-      expect(broker.getControl(91, "browser:a")).toBeNull();
-      await vi.waitFor(() =>
-        expect(
-          messages.some(
-            ({ peer, frame }) =>
-              peer === 3 &&
-              frame.type === "register" &&
-              frame.serverUrl === serverUrl,
-          ),
-        ).toBe(true),
-      );
-      manager.attach({
-        hostWindow,
-        request: {
-          tabId: "new-server-tab",
-          threadId: "thread-new",
-          url: "about:blank",
-          bounds: { x: 0, y: 0, width: 640, height: 400 },
-          visible: false,
-        },
-      });
-      await vi.waitFor(() =>
-        expect(
-          messages.some(
-            ({ peer, frame }) =>
-              peer === 3 &&
-              frame.type === "desktop-browser.changed" &&
-              frame.threadId === "thread-new",
-          ),
-        ).toBe(true),
-      );
-      expect(
-        messages
-          .filter(({ peer }) => peer === 3)
-          .every(
-            ({ frame }) =>
-              frame.type === "register" || frame.threadId === "thread-new",
-          ),
-      ).toBe(true);
-      expect(hasOriginalTab(3)).toBe(false);
-    } finally {
-      client.stop();
-      broker.dispose();
-      manager.destroyAll();
-      for (const socket of server.clients) socket.terminate();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("captures an unpainted hidden page without detaching another controller", async () => {
-    const { manager, view } = createRendererRecoveryFixture(91);
-    const [tab] = manager.getAutomationTabs({
-      hostWebContentsId: 91,
-      threadId: "thread-1",
-    });
-    if (!tab) throw new Error("Expected native tab");
-    const capture = vi
-      .spyOn(view.webContents, "capturePage")
-      .mockRejectedValue(
-        new Error("Current display surface not available for capture"),
-      );
-    const debuggerApi = view.webContents.debugger;
-    debuggerApi.sendCommand.mockResolvedValue({
-      data: Buffer.from("jpeg").toString("base64"),
-    });
-    try {
-      await captureDesktopBrowserPage(tab.webContents);
-      expect(debuggerApi.isAttached()).toBe(false);
-      expect(debuggerApi.detachCalls).toBe(1);
-      expect(view.webContents.getBackgroundThrottling()).toBe(true);
-      debuggerApi.attach("1.3");
-      await captureDesktopBrowserPage(tab.webContents);
-      expect(debuggerApi.isAttached()).toBe(true);
-      expect(debuggerApi.detachCalls).toBe(1);
-      expect(debuggerApi.sendCommand).toHaveBeenCalledWith(
-        "Page.captureScreenshot",
-        { format: "jpeg", quality: 80, captureBeyondViewport: false },
-        undefined,
-      );
-    } finally {
-      capture.mockRestore();
-      manager.destroyAll();
-    }
-  });
-
-  it("reveals and focuses pages created through a controlled CDP connection", async () => {
-    const { manager, hostWindow } = createRendererRecoveryFixture(91);
-    const focus = vi.fn();
-    const show = vi.fn();
-    const restore = vi.fn();
-    const broker = createDesktopBrowserBroker({
-      manager,
-      product: "Chrome/test",
-    });
-    broker.registerWindow(
-      Object.assign(hostWindow, {
-        focus,
-        show,
-        restore,
-        isMinimized: () => true,
-      }),
-    );
-    broker.setHostId("host-1");
-    const instance = broker.listInstances()[0]!;
-    const scope = {
-      instanceId: instance.instanceId,
-      generation: instance.generation,
-      threadId: "thread-1",
-    };
-    let socket: WebSocket | null = null;
-    try {
-      await broker.execute({
-        type: "desktop.browser.create_tab",
-        ...scope,
-        tabId: "automation",
-        url: "about:blank",
-        profile: { kind: "automation", id: "profile" },
-        presentation: "hidden",
-      });
-      await broker.execute({
-        type: "desktop.browser.acquire_control",
-        ...scope,
-        leaseId: "lease",
-        tabIds: ["automation"],
-        controllerLabel: "Agent",
-        expiresAt: Date.now() + 60000,
-      });
-      const connection = await broker.execute({
-        type: "desktop.browser.open_connection",
-        ...scope,
-        leaseId: "lease",
-        tabIds: ["automation"],
-      });
-      if (!("wsEndpoint" in connection)) throw new Error("Expected connection");
-      socket = new WebSocket(connection.wsEndpoint);
-      await once(socket, "open");
-      socket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Target.createTarget",
-          params: { url: "https://example.com/new" },
-        }),
-      );
-      await vi.waitFor(() => expect(focus).toHaveBeenCalledOnce());
-      expect(show).toHaveBeenCalledOnce();
-      expect(restore).toHaveBeenCalledOnce();
-      const created = manager
-        .listTabs({ hostWebContentsId: 91, threadId: "thread-1" })
-        .find((tab) => tab.url === "https://example.com/new");
-      expect(created).toBeDefined();
-      expect(hostWindow.webContents.sentPayloads).toContainEqual({
-        tabId: created!.tabId,
-        threadId: "thread-1",
-        desktopTarget: {
-          hostId: "host-1",
-          instanceId: scope.instanceId,
-          generation: scope.generation,
-        },
-      });
-      expect(broker.getControl(91, created!.tabId)?.control?.leaseId).toBe(
-        "lease",
-      );
-    } finally {
-      socket?.terminate();
-      broker.dispose();
-      manager.destroyAll();
-    }
-  });
-
-  it("revokes native debugger control synchronously on takeover and fences reconnect generations", async () => {
-    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
-    const broker = createDesktopBrowserBroker({
-      manager,
-      product: "Chrome/test",
-    });
-    broker.registerWindow(
-      Object.assign(hostWindow, {
-        focus() {},
-        show() {},
-        restore() {},
-        isMinimized: () => false,
-      }),
-    );
-    broker.setHostId("host-1");
-    const instance = broker.listInstances()[0];
-    if (!instance) throw new Error("Expected registered instance");
-    const scope = {
-      instanceId: instance.instanceId,
-      generation: instance.generation,
-      threadId: "thread-1",
-    };
-    const acquire = (leaseId: string) =>
-      broker.execute({
-        type: "desktop.browser.acquire_control",
-        ...scope,
-        leaseId,
-        tabIds: ["browser:a"],
-        controllerLabel: "Test",
-        expiresAt: Date.now() + 60_000,
-      });
-    let socket: WebSocket | null = null;
-    try {
-      await acquire("first");
-      await expect(acquire("conflict")).rejects.toThrow(
-        "already has a controller",
-      );
-      const connection = await broker.execute({
-        type: "desktop.browser.open_connection",
-        ...scope,
-        leaseId: "first",
-        tabIds: ["browser:a"],
-      });
-      if (!("wsEndpoint" in connection)) throw new Error("Expected connection");
-      socket = new WebSocket(connection.wsEndpoint);
-      await once(socket, "open");
-      socket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Target.setAutoAttach",
-          params: {
-            autoAttach: true,
-            flatten: true,
-            waitForDebuggerOnStart: false,
-          },
-        }),
-      );
-      await vi.waitFor(() =>
-        expect(view.webContents.debugger.isAttached()).toBe(true),
-      );
-      const closed = once(socket, "close");
-      broker.takeOver(91, "browser:a");
-      expect(view.webContents.debugger.isAttached()).toBe(false);
-      expect(broker.getControl(91, "browser:a")?.control).toBeNull();
-      await acquire("replacement");
-      expect(broker.getControl(91, "browser:a")?.control?.leaseId).toBe(
-        "replacement",
-      );
-      await closed;
-      broker.setHostId(null);
-      expect(broker.getControl(91, "browser:a")?.control).toBeNull();
-      broker.setHostId("host-1");
-      await expect(
-        broker.execute({ type: "desktop.browser.list_tabs", ...scope }),
-      ).rejects.toThrow("reconnected");
-      expect(
-        manager.listTabs({ hostWebContentsId: 91, threadId: "thread-1" }),
-      ).toHaveLength(1);
-    } finally {
-      socket?.terminate();
-      broker.dispose();
-      manager.destroyAll();
-    }
-  });
-
-  it("creates hidden automation tabs in isolated hardened profiles and preserves them on presentation attach", () => {
-    const { manager, hostWindow } = createRendererRecoveryFixture(91);
-    const create = (tabId: string, profileId: string) =>
-      manager.createTab({
-        hostWindow,
-        tabId,
-        threadId: "thread-1",
-        url: "about:blank",
-        profile: { kind: "automation", id: profileId },
-        viewport: { width: 640, height: 400 },
-      });
-    const first = create("automation:first", "profile-1");
-    create("automation:same", "profile-1");
-    create("automation:other", "profile-2");
-    const personal = requireFakeView(0);
-    const automated = requireFakeView(1);
-    expect(automated.visible).toBe(false);
-    expect(automated.webContents.focusCalls).toBe(0);
-    expect(automated.options.webPreferences.partition).not.toBe(
-      personal.options.webPreferences.partition,
-    );
-    expect(requireFakeView(2).options.webPreferences.partition).toBe(
-      automated.options.webPreferences.partition,
-    );
-    expect(requireFakeView(3).options.webPreferences.partition).not.toBe(
-      automated.options.webPreferences.partition,
-    );
-    expect(electronMock.fakeSessions).toHaveLength(3);
-    expect(
-      electronMock.fakeSessions.every(
-        (session) => session.permissionCheckHandler !== null,
-      ),
-    ).toBe(true);
-    attachBrowserTab({
-      manager,
-      hostWindow,
-      tabId: first.tabId,
-      url: "https://stale.example",
-    });
-    expect(
-      manager
-        .listTabs({ hostWebContentsId: 91, threadId: "thread-1" })
-        .find((tab) => tab.tabId === first.tabId)?.profile,
-    ).toEqual(first.profile);
-    expect(automated.webContents.loadURLCalls).toEqual(["about:blank"]);
-    manager.closeTab({
-      hostWebContentsId: 91,
-      threadId: "thread-1",
-      tabId: first.tabId,
-      generation: first.generation,
-    });
-    const replacement = create(first.tabId, "profile-1");
-    expect(replacement.generation).not.toBe(first.generation);
-    expect(() =>
-      manager.closeTab({
-        hostWebContentsId: 91,
-        threadId: "thread-1",
-        tabId: first.tabId,
-        generation: first.generation,
-      }),
-    ).toThrow("replaced");
-    manager.closeTab({
-      hostWebContentsId: 91,
-      threadId: "thread-1",
-      tabId: replacement.tabId,
-      generation: replacement.generation,
-    });
-    manager.attach({
-      hostWindow,
-      request: {
-        tabId: first.tabId,
-        threadId: "thread-1",
-        url: "https://stale.example",
-        bounds: { x: 0, y: 0, width: 640, height: 400 },
-        visible: true,
-        existingOnly: true,
-      },
-    });
-    expect(
-      manager
-        .listTabs({ hostWebContentsId: 91, threadId: "thread-1" })
-        .some((tab) => tab.tabId === first.tabId),
-    ).toBe(false);
-  });
-
-  it("captures bounded hidden pages without focus and rejects a removed target during capture", async () => {
-    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
-    manager.setVisible({
-      hostWindow,
-      request: { tabId: "browser:a", visible: false },
-    });
-    const tab = manager.listTabs({
-      hostWebContentsId: 91,
-      threadId: "thread-1",
-    })[0];
-    if (tab === undefined) throw new Error("Expected native tab");
-    const request = {
-      hostWebContentsId: 91,
-      threadId: tab.threadId,
-      tabId: tab.tabId,
-      generation: tab.generation,
-      maxWidth: 640,
-      maxHeight: 640,
-      quality: 70,
-    };
-    const focusCalls = view.webContents.focusCalls;
-    const capture = manager.captureTab(request);
-    await settlePendingCaptures(view);
-    await expect(capture).resolves.toEqual({
-      data: Buffer.from("jpeg-bytes"),
-      width: 640,
-      height: 360,
-    });
-    expect(view.visible).toBe(false);
-    expect(view.webContents.focusCalls).toBe(focusCalls);
-    const staleCapture = manager.captureTab(request);
-    const rejected = expect(staleCapture).rejects.toThrow("unavailable");
-    manager.closeTab(request);
-    await settlePendingCaptures(view);
-    await rejected;
-  });
-
-  it("initiates a new blank page load before announcing the automation target", () => {
+  it("places browser content below the host renderer", () => {
     const manager = createDesktopBrowserViewManager();
     const hostWindow = new FakeHostWindow({
       contentBounds: { width: 700, height: 450 },
-      webContentsId: 91,
+      webContentsId: 48,
     });
-    const observedLoads: string[][] = [];
-    manager.subscribeAutomationTabs(() => {
-      expect(
-        manager.getAutomationTabs({
-          hostWebContentsId: 91,
-          threadId: "thread-1",
-        }),
-      ).toHaveLength(1);
-      observedLoads.push([...requireFakeView(0).webContents.loadURLCalls]);
-    });
+
     attachBrowserTab({
       manager,
       hostWindow,
-      tabId: "browser:blank",
-      url: "about:blank",
+      tabId: "browser:a",
+      url: "https://example.com",
     });
-    expect(observedLoads).toEqual([["about:blank"]]);
+
+    expect(hostWindow.contentView.addCalls).toEqual([
+      { index: 0, view: requireFakeView(0) },
+    ]);
   });
 
-  it("preserves background navigation when revealing a tab with a stale persisted URL", () => {
-    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
+  it("removes hidden native views from the host input tree and restores them on show", () => {
+    const manager = createDesktopBrowserViewManager();
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 49,
+    });
+
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com",
+    });
+    const view = requireFakeView(0);
+
     manager.setVisible({
       hostWindow,
       request: { tabId: "browser:a", visible: false },
     });
-    view.webContents.emitDidNavigate("https://example.com/agent-navigation");
+    expect(hostWindow.contentView.removedViews).toEqual([view]);
 
+    manager.setVisible({
+      hostWindow,
+      request: { tabId: "browser:a", visible: true },
+    });
+    expect(hostWindow.contentView.addCalls).toEqual([
+      { index: 0, view },
+      { index: 0, view },
+    ]);
+    expect(view.visible).toBe(true);
+  });
+
+  it("replaces the global Browser session and reloads every live tab", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 49,
+    });
     attachBrowserTab({
       manager,
       hostWindow,
       tabId: "browser:a",
-      url: "https://example.com/original",
+      url: "https://example.com",
     });
-
-    expect(electronMock.fakeViews).toHaveLength(1);
-    expect(view.visible).toBe(true);
-    expect(view.webContents.loadURLCalls).toEqual([
-      "https://example.com/original",
-    ]);
-    expect(view.webContents.getURL()).toBe(
-      "https://example.com/agent-navigation",
-    );
-    expect(hostWindow.webContents.sentPayloads.at(-1)).toMatchObject({
+    const otherHostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 50,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow: otherHostWindow,
+      tabId: "browser:b",
+      url: "https://example.org",
+    });
+    const request = {
       tabId: "browser:a",
-      url: "https://example.com/agent-navigation",
+      cookies: [
+        {
+          domain: "example.com",
+          expirationDate: null,
+          httpOnly: true,
+          name: "__Host-session",
+          path: "/",
+          sameSite: "lax",
+          secure: true,
+          value: "host-value",
+        },
+        {
+          domain: ".example.com",
+          expirationDate: null,
+          httpOnly: true,
+          name: "__Host-invalid",
+          path: "/",
+          sameSite: "lax",
+          secure: true,
+          value: "invalid-value",
+        },
+        {
+          domain: ".example.com",
+          expirationDate: null,
+          httpOnly: true,
+          name: "__Secure-session",
+          path: "/",
+          sameSite: "strict",
+          secure: true,
+          value: "secure-value",
+        },
+        {
+          domain: ".example.com",
+          expirationDate: null,
+          httpOnly: true,
+          name: "overlap",
+          path: "/",
+          sameSite: "lax",
+          secure: true,
+          value: "secure-overlap",
+        },
+        {
+          domain: "sub.example.com",
+          expirationDate: null,
+          httpOnly: false,
+          name: "overlap",
+          path: "/account",
+          sameSite: "lax",
+          secure: false,
+          value: "insecure-overlap",
+        },
+      ],
+    } satisfies BbDesktopBrowserImportCookiesRequest;
+
+    await expect(
+      manager.importCookies({ hostWindow, request }),
+    ).resolves.toEqual({ importedCookies: 4 });
+    const browserSession = requireFakeSession(0);
+    expect(browserSession.cookieSetCalls).toEqual([
+      {
+        httpOnly: true,
+        name: "__Host-session",
+        path: "/",
+        sameSite: "lax",
+        secure: true,
+        url: "https://example.com/",
+        value: "host-value",
+      },
+      {
+        domain: "example.com",
+        httpOnly: true,
+        name: "__Secure-session",
+        path: "/",
+        sameSite: "strict",
+        secure: true,
+        url: "https://example.com/",
+        value: "secure-value",
+      },
+      {
+        domain: "example.com",
+        httpOnly: true,
+        name: "overlap",
+        path: "/",
+        sameSite: "lax",
+        secure: true,
+        url: "https://example.com/",
+        value: "secure-overlap",
+      },
+      {
+        httpOnly: false,
+        name: "overlap",
+        path: "/account",
+        sameSite: "lax",
+        secure: false,
+        url: "https://sub.example.com/account",
+        value: "insecure-overlap",
+      },
+    ]);
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+    ]);
+    expect(browserSession.flushStoreCalls).toBe(1);
+    expect(browserSession.clearCacheCalls).toBe(0);
+    expect(electronMock.fakeSessions).toHaveLength(1);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(1);
+    expect(requireFakeView(1).webContents.reloadCalls).toBe(1);
+
+    await expect(
+      manager.importCookies({ hostWindow, request }),
+    ).resolves.toEqual({ importedCookies: 4 });
+    expect(browserSession.cookieSetCalls).toHaveLength(8);
+    expect(browserSession.flushStoreCalls).toBe(2);
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+      { storages: ["cookies"] },
+    ]);
+    expect(browserSession.clearCacheCalls).toBe(0);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(2);
+    expect(requireFakeView(1).webContents.reloadCalls).toBe(2);
+    await manager.clearImportedCookies({ hostWindow, tabId: "browser:a" });
+    expect(browserSession.flushStoreCalls).toBe(3);
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+      { storages: ["cookies"] },
+      undefined,
+    ]);
+    expect(browserSession.clearCacheCalls).toBe(1);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(3);
+    expect(requireFakeView(1).webContents.reloadCalls).toBe(3);
+    await expect(
+      manager.importCookies({
+        hostWindow,
+        request: { tabId: "browser:a", cookies: [] },
+      }),
+    ).resolves.toEqual({ importedCookies: 0 });
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+      { storages: ["cookies"] },
+      undefined,
+      { storages: ["cookies"] },
+    ]);
+    expect(browserSession.clearCacheCalls).toBe(1);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(4);
+    expect(requireFakeView(1).webContents.reloadCalls).toBe(4);
+  });
+
+  it("removes existing HttpOnly cookies before importing replacements", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 53,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://github.com",
+    });
+    const browserSession = requireFakeSession(0);
+    browserSession.cookieGetResults.push({
+      domain: ".github.com",
+      name: "user_session",
+      path: "/",
+      secure: true,
     });
 
-    manager.navigate({
-      hostWindow,
-      request: { tabId: "browser:a", url: "https://example.com/explicit" },
-    });
-    expect(view.webContents.loadURLCalls).toEqual([
-      "https://example.com/original",
-      "https://example.com/explicit",
+    await expect(
+      manager.importCookies({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          cookies: [
+            {
+              domain: ".github.com",
+              expirationDate: null,
+              httpOnly: true,
+              name: "user_session",
+              path: "/",
+              sameSite: "lax",
+              secure: true,
+              value: "replacement",
+            },
+          ],
+        },
+      }),
+    ).resolves.toEqual({ importedCookies: 1 });
+
+    expect(browserSession.cookieRemoveCalls).toEqual([
+      { name: "user_session", url: "https://github.com/" },
+    ]);
+    expect(browserSession.cookieSetCalls).toEqual([
+      expect.objectContaining({
+        domain: "github.com",
+        httpOnly: true,
+        name: "user_session",
+        value: "replacement",
+      }),
     ]);
   });
 
-  it("rejects a different thread reattaching the same native tab without mutating it", () => {
-    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
-    const listener = vi.fn();
-    manager.subscribeAutomationTabs(listener);
-    const originalBounds = [...view.boundsCalls];
-    const originalFocusCalls = view.webContents.focusCalls;
+  it("preserves host-only and domain cookies Electron distinguishes", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 54,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://github.com",
+    });
 
-    manager.attach({
+    await expect(
+      manager.importCookies({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          cookies: [
+            {
+              domain: "github.com",
+              expirationDate: null,
+              httpOnly: true,
+              name: "user_session",
+              path: "/",
+              sameSite: "lax",
+              secure: true,
+              value: "host-only",
+            },
+            {
+              domain: ".github.com",
+              expirationDate: null,
+              httpOnly: true,
+              name: "user_session",
+              path: "/",
+              sameSite: "lax",
+              secure: true,
+              value: "domain",
+            },
+            {
+              domain: ".github.com",
+              expirationDate: null,
+              httpOnly: false,
+              name: "user_session",
+              path: "/",
+              sameSite: "lax",
+              secure: true,
+              value: "domain-duplicate",
+            },
+          ],
+        },
+      }),
+    ).resolves.toEqual({ importedCookies: 2 });
+
+    expect(requireFakeSession(0).cookieSetCalls).toEqual([
+      expect.objectContaining({ value: "host-only" }),
+      expect.objectContaining({ domain: "github.com", value: "domain" }),
+    ]);
+  });
+
+  it("serializes cookie imports across Browser windows", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const firstHostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 51,
+    });
+    const secondHostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 52,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow: firstHostWindow,
+      tabId: "browser:a",
+      url: "https://example.com",
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow: secondHostWindow,
+      tabId: "browser:b",
+      url: "https://example.org",
+    });
+    const firstImport = manager.importCookies({
+      hostWindow: firstHostWindow,
+      request: {
+        tabId: "browser:a",
+        cookies: [
+          {
+            domain: ".example.com",
+            expirationDate: null,
+            httpOnly: true,
+            name: "first",
+            path: "/",
+            sameSite: "lax",
+            secure: true,
+            value: "first-value",
+          },
+        ],
+      },
+    });
+    const secondImport = manager.importCookies({
+      hostWindow: secondHostWindow,
+      request: {
+        tabId: "browser:b",
+        cookies: [
+          {
+            domain: ".example.org",
+            expirationDate: null,
+            httpOnly: true,
+            name: "second",
+            path: "/",
+            sameSite: "lax",
+            secure: true,
+            value: "second-value",
+          },
+        ],
+      },
+    });
+
+    await expect(Promise.all([firstImport, secondImport])).resolves.toEqual([
+      { importedCookies: 1 },
+      { importedCookies: 1 },
+    ]);
+    const browserSession = requireFakeSession(0);
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+      { storages: ["cookies"] },
+    ]);
+    expect(browserSession.cookieSetCalls).toEqual([
+      expect.objectContaining({ name: "first", value: "first-value" }),
+      expect.objectContaining({ name: "second", value: "second-value" }),
+    ]);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(2);
+    expect(requireFakeView(1).webContents.reloadCalls).toBe(2);
+  });
+
+  it("batches large cookie imports through the native session", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 50,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com",
+    });
+    const request = {
+      tabId: "browser:a",
+      cookies: Array.from({ length: 251 }, (_, index) => ({
+        domain: ".example.com",
+        expirationDate: null,
+        httpOnly: true,
+        name: `session-${index}`,
+        path: "/",
+        sameSite: "lax" as const,
+        secure: true,
+        value: `value-${index}`,
+      })),
+    } satisfies BbDesktopBrowserImportCookiesRequest;
+
+    await expect(
+      manager.importCookies({ hostWindow, request }),
+    ).resolves.toEqual({ importedCookies: 251 });
+    const browserSession = requireFakeSession(0);
+    expect(browserSession.clearStorageDataCalls).toEqual([
+      { storages: ["cookies"] },
+    ]);
+    expect(browserSession.cookieSetCalls).toHaveLength(251);
+    expect(browserSession.cookieSetCalls[0]).toMatchObject({
+      name: "session-0",
+      value: "value-0",
+    });
+    expect(browserSession.cookieSetCalls[250]).toMatchObject({
+      name: "session-250",
+      value: "value-250",
+    });
+  });
+
+  it("binds page captures to the exact navigation epoch", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 49,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com",
+    });
+    const view = requireFakeView(0);
+
+    const capture = manager.capturePage({
       hostWindow,
       request: {
         tabId: "browser:a",
-        threadId: "thread-other",
-        url: "https://example.com/replaced",
-        bounds: { x: 0, y: 0, width: 100, height: 100 },
-        visible: false,
+        format: "png",
+        quality: 85,
+        expectedNavigationEpoch: 0,
       },
     });
-
-    expect(view.boundsCalls).toEqual(originalBounds);
-    expect(view.visible).toBe(true);
-    expect(view.webContents.focusCalls).toBe(originalFocusCalls);
-    expect(view.webContents.loadURLCalls).toEqual([
-      "https://example.com/original",
-    ]);
-    expect(electronMock.fakeViews).toHaveLength(1);
-    expect(
-      manager.getAutomationTabs({
-        hostWebContentsId: 91,
-        threadId: "thread-other",
-      }),
-    ).toEqual([]);
-    expect(
-      manager.getAutomationTabs({
-        hostWebContentsId: 91,
-        threadId: "thread-1",
-      }),
-    ).toEqual([{ tabId: "browser:a", webContents: view.webContents }]);
-    expect(listener).not.toHaveBeenCalled();
-  });
-
-  it("discovers hidden live tabs only in the requested window and thread", () => {
-    const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
-    manager.setVisible({
-      hostWindow,
-      request: { tabId: "browser:a", visible: false },
+    view.webContents.pendingCaptureResolvers.shift()?.(
+      electronMock.fakeCapturedImage,
+    );
+    await expect(capture).resolves.toEqual({
+      navigationEpoch: 0,
+      dataUrl: `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`,
+      pixelSize: { width: 1_200, height: 800 },
     });
-    manager.attach({
+
+    const invalidatedCapture = manager.capturePage({
       hostWindow,
       request: {
-        tabId: "browser:other-thread",
-        threadId: "thread-other",
-        url: "https://example.com/other",
-        bounds: { x: 0, y: 0, width: 100, height: 100 },
-        visible: false,
+        tabId: "browser:a",
+        format: "jpeg",
+        quality: 75,
+        expectedNavigationEpoch: 0,
       },
     });
-    const otherWindow = new FakeHostWindow({
-      contentBounds: { width: 700, height: 450 },
-      webContentsId: 910,
-    });
-    attachBrowserTab({
-      manager,
-      hostWindow: otherWindow,
-      tabId: "browser:a",
-      url: "https://example.com",
-    });
-
-    expect(
-      manager.getAutomationTabs({
-        hostWebContentsId: 91,
-        threadId: "thread-1",
+    view.webContents.emitDidStartNavigation();
+    view.webContents.pendingCaptureResolvers.shift()?.(
+      electronMock.fakeCapturedImage,
+    );
+    await expect(invalidatedCapture).rejects.toThrow(
+      "Browser page changed during capture",
+    );
+    await expect(
+      manager.capturePage({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          format: "png",
+          quality: 85,
+          expectedNavigationEpoch: 0,
+        },
       }),
-    ).toEqual([{ tabId: "browser:a", webContents: view.webContents }]);
-    expect(
-      manager.getAutomationTabs({
-        hostWebContentsId: 910,
-        threadId: "thread-1",
-      }),
-    ).toEqual([
-      { tabId: "browser:a", webContents: requireFakeView(2).webContents },
-    ]);
-    view.webContents.destroyed = true;
-    expect(
-      manager.getAutomationTabs({
-        hostWebContentsId: 91,
-        threadId: "thread-1",
-      }),
-    ).toEqual([]);
+    ).rejects.toThrow("Browser page changed before capture");
   });
-
-  it("notifies subscribers of native creation and hidden navigation until unsubscribed", () => {
-    const manager = createDesktopBrowserViewManager();
+  it("captures full pages and scopes dialogs, permissions, and diagnostics to one tab", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
     const hostWindow = new FakeHostWindow({
       contentBounds: { width: 700, height: 450 },
-      webContentsId: 91,
-    });
-    const snapshots: Array<
-      Array<{ tabId: string; url: string; title: string }>
-    > = [];
-    const unsubscribe = manager.subscribeAutomationTabs(() => {
-      snapshots.push(
-        manager
-          .getAutomationTabs({ hostWebContentsId: 91, threadId: "thread-1" })
-          .map(({ tabId, webContents }) => ({
-            tabId,
-            url: webContents.getURL(),
-            title: webContents.getTitle(),
-          })),
-      );
+      webContentsId: 50,
     });
     attachBrowserTab({
       manager,
@@ -2052,63 +2082,238 @@ describe("DesktopBrowserViewManager", () => {
       tabId: "browser:a",
       url: "https://example.com",
     });
-    expect(snapshots).toEqual([
-      [{ tabId: "browser:a", url: "https://example.com", title: "" }],
-    ]);
-    manager.setVisible({
+    const view = requireFakeView(0);
+    const fakeSession = electronMock.fakeSessions.at(-1);
+    if (
+      fakeSession?.permissionCheckHandler === null ||
+      fakeSession?.permissionCheckHandler === undefined ||
+      fakeSession.permissionRequestHandler === null
+    ) {
+      throw new Error("Expected Browser permission handlers");
+    }
+
+    await expect(
+      manager.runAutomation({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          action: {
+            kind: "set-permissions",
+            decision: "allow",
+            permissions: ["media"],
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      navigationEpoch: 0,
+      value: { decision: "allow", permissions: ["media"] },
+    });
+    expect(fakeSession.permissionCheckHandler(view.webContents, "media")).toBe(
+      true,
+    );
+    const permissionDecisions: boolean[] = [];
+    fakeSession.permissionRequestHandler(view.webContents, "media", (allowed) =>
+      permissionDecisions.push(allowed),
+    );
+    expect(permissionDecisions).toEqual([true]);
+    await manager.runAutomation({
       hostWindow,
-      request: { tabId: "browser:a", visible: false },
+      request: {
+        tabId: "browser:a",
+        expectedNavigationEpoch: 0,
+        action: {
+          kind: "set-permissions",
+          decision: "deny",
+          permissions: ["clipboard-sanitized-write"],
+        },
+      },
+    });
+    expect(
+      fakeSession.permissionCheckHandler(
+        view.webContents,
+        "clipboard-sanitized-write",
+      ),
+    ).toBe(false);
+
+    await manager.runAutomation({
+      hostWindow,
+      request: {
+        tabId: "browser:a",
+        expectedNavigationEpoch: 0,
+        action: {
+          kind: "set-dialog-handler",
+          behavior: "accept",
+          promptText: "approved",
+        },
+      },
+    });
+    view.webContents.debugger.emitMessage("Page.javascriptDialogOpening", {
+      message: "Continue?",
+      type: "prompt",
+    });
+    expect(view.webContents.debugger.sendCommandCalls).toContainEqual({
+      method: "Page.handleJavaScriptDialog",
+      params: { accept: true, promptText: "approved" },
+    });
+
+    await expect(
+      manager.runAutomation({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          action: {
+            kind: "capture-full-page",
+            format: "png",
+            quality: 100,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      navigationEpoch: 0,
+      value: {
+        dataUrl: `data:image/png;base64,${Buffer.from("full-page").toString("base64")}`,
+        pixelSize: { width: 1_200, height: 2_400 },
+      },
+    });
+
+    await expect(
+      manager.runAutomation({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          action: { kind: "diagnostics" },
+        },
+      }),
+    ).resolves.toMatchObject({
+      value: {
+        dialogs: [
+          expect.objectContaining({
+            behavior: "accept",
+            message: "Continue?",
+          }),
+        ],
+        permissions: [
+          expect.objectContaining({
+            decision: "allow",
+            permission: "media",
+          }),
+        ],
+      },
+    });
+  });
+  it("retains a discovered child frame through a same-loader navigation event", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 50,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://example.com",
     });
     const view = requireFakeView(0);
-    view.webContents.emitDidNavigate("https://example.com/next");
-    view.webContents.emitDidNavigateInPage("https://example.com/next#section");
-    view.webContents.emitPageTitleUpdated("Next");
-    expect(snapshots.slice(1)).toEqual([
-      [{ tabId: "browser:a", url: "https://example.com/next", title: "" }],
-      [
-        {
-          tabId: "browser:a",
-          url: "https://example.com/next#section",
-          title: "",
+    view.webContents.debugger.getFrameTreeResult = {
+      frameTree: {
+        frame: {
+          id: "root",
+          loaderId: "root-loader",
+          name: "",
+          url: "https://example.com",
         },
-      ],
-      [
-        {
-          tabId: "browser:a",
-          url: "https://example.com/next#section",
-          title: "Next",
-        },
-      ],
-    ]);
-    unsubscribe();
-    view.webContents.emitDidNavigate("https://example.com/ignored");
-    expect(snapshots).toHaveLength(4);
-  });
+        childFrames: [
+          {
+            frame: {
+              id: "child",
+              loaderId: "child-loader",
+              name: "",
+              url: "https://child.example.com",
+            },
+          },
+        ],
+      },
+    };
+    const first = await manager.listFrames({
+      hostWindow,
+      request: { tabId: "browser:a", expectedNavigationEpoch: 0, maxFrames: 8 },
+    });
+    const child = first.frames[0];
+    if (child === undefined) throw new Error("Expected a discovered child frame.");
+    const target = {
+      frameId: child.frameId,
+      documentEpoch: child.documentEpoch,
+    };
 
-  it.each(["detach", "releaseWindow", "destroyAll", "destroyed"] as const)(
-    "notifies once after removing a native target through %s",
-    (operation) => {
-      const { manager, hostWindow, view } = createRendererRecoveryFixture(91);
-      const snapshots: number[] = [];
-      manager.subscribeAutomationTabs(() => {
-        snapshots.push(
-          manager.getAutomationTabs({
-            hostWebContentsId: 91,
-            threadId: "thread-1",
-          }).length,
-        );
-      });
-      if (operation === "detach")
-        manager.detach({ hostWindow, tabId: "browser:a" });
-      if (operation === "releaseWindow") manager.releaseWindow(91);
-      if (operation === "destroyAll") manager.destroyAll();
-      if (operation === "destroyed") view.webContents.close();
-      expect(snapshots).toEqual([0]);
-      expect(view.webContents.isDestroyed()).toBe(true);
-      manager.destroyAll();
-      expect(snapshots).toEqual([0]);
-    },
-  );
+    view.webContents.debugger.emitMessage("Page.frameNavigated", {
+      frame: { id: "child", loaderId: "child-loader" },
+    });
+
+    await expect(
+      manager.sendTrustedInput({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          frame: target,
+          action: {
+            kind: "click",
+            x: 10,
+            y: 20,
+            button: "left",
+            clickCount: 1,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      navigationEpoch: 0,
+      frame: target,
+      dispatched: 2,
+    });
+    expect(view.webContents.sentInputEvents).toEqual([
+      {
+        type: "mouseDown",
+        x: 30,
+        y: 50,
+        button: "left",
+        clickCount: 1,
+      },
+      {
+        type: "mouseUp",
+        x: 30,
+        y: 50,
+        button: "left",
+        clickCount: 1,
+      },
+    ]);
+
+    view.webContents.debugger.emitMessage("Page.frameNavigated", {
+      frame: { id: "child", loaderId: "next-child-loader" },
+    });
+
+    await expect(
+      manager.sendTrustedInput({
+        hostWindow,
+        request: {
+          tabId: "browser:a",
+          expectedNavigationEpoch: 0,
+          frame: target,
+          action: {
+            kind: "click",
+            x: 10,
+            y: 20,
+            button: "left",
+            clickCount: 1,
+          },
+        },
+      }),
+    ).rejects.toThrow("The Browser frame target changed");
+  });
 
   it("forwards resolved browser shortcuts and suppresses the untrusted page", () => {
     const dispatchAppCommand = vi.fn();
@@ -3365,5 +3570,58 @@ describe("DesktopBrowserViewManager", () => {
       requestGrants.push(granted);
     });
     expect(requestGrants).toEqual([true, false, false]);
+  });
+  it("trusts only the current loopback HTTPS certificate for this Browser session", () => {
+    const manager = createDesktopBrowserViewManager();
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { height: 700, width: 900 },
+      webContentsId: 75,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:a",
+      url: "https://localhost:8443/",
+    });
+
+    manager.trustLocalhostCertificate({ hostWindow, tabId: "browser:a" });
+
+    const verifyProc = requireFakeSession(0).certificateVerifyProc;
+    expect(verifyProc).not.toBeNull();
+    if (verifyProc === null) {
+      throw new Error("Expected a certificate verification handler.");
+    }
+    const certificateErrorListener =
+      electronMock.certificateErrorListeners.at(-1);
+    expect(certificateErrorListener).toBeDefined();
+    if (certificateErrorListener === undefined) {
+      throw new Error("Expected a certificate error listener.");
+    }
+    const certificateEvent: FakePreventableEvent = {
+      defaultPrevented: false,
+      preventDefault(): void {
+        this.defaultPrevented = true;
+      },
+    };
+    let certificateAccepted = false;
+    certificateErrorListener(
+      certificateEvent,
+      requireFakeView(0).webContents,
+      "https://localhost:8443/",
+      "ERR_CERT_AUTHORITY_INVALID",
+      {},
+      (trusted) => {
+        certificateAccepted = trusted;
+      },
+    );
+
+    expect(certificateEvent.defaultPrevented).toBe(true);
+    expect(certificateAccepted).toBe(true);
+    const results: number[] = [];
+    verifyProc({ hostname: "localhost" }, (result) => results.push(result));
+    verifyProc({ hostname: "example.com" }, (result) => results.push(result));
+
+    expect(results).toEqual([0, -3]);
+    expect(requireFakeView(0).webContents.reloadCalls).toBe(1);
   });
 });

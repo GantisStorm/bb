@@ -41,6 +41,24 @@
     height: 100%;
   }
 
+  body.bb-app-shell
+    #root[data-desktop-browser-view-aperture] {
+    -webkit-mask-image:
+      linear-gradient(#000 0 0),
+      linear-gradient(#000 0 0);
+    -webkit-mask-size:
+      100% 100%,
+      var(--bb-desktop-browser-aperture-width)
+        var(--bb-desktop-browser-aperture-height);
+    -webkit-mask-position:
+      0 0,
+      var(--bb-desktop-browser-aperture-x)
+        var(--bb-desktop-browser-aperture-y);
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+
   @media (display-mode: standalone) {
     :root {
       --bb-shell-height: 100lvh;

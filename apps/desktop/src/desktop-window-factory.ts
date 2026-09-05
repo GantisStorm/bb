@@ -166,7 +166,7 @@ function createWindowOptions(
 ): BrowserWindowConstructorOptions {
   return {
     ...(args.isLinuxFrameless ? { frame: false } : {}),
-    ...(args.isLinuxTransparent
+    ...(args.isLinuxTransparent || args.isMac
       ? { backgroundColor: "#00000000", transparent: true }
       : {}),
     ...(args.isMac

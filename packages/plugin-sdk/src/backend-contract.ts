@@ -19,11 +19,31 @@ import type {
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type { BbSdk } from "@bb/sdk";
 import type {
+  BrowserControlAction,
+  BrowserControlError,
+  BrowserFrameDescriptor,
+  BrowserFrameTarget,
+  BrowserTabDescriptor,
+  BrowserTabOwnerDescriptor,
+  BrowserTabTarget,
+  BrowserWaitCriteria,
+  BrowserWaitResult,
   ExecutionInputFieldSource,
   StartedOnBehalfOf,
   ThreadCreateOrigin,
   ThreadResponse,
 } from "@bb/server-contract";
+export type {
+  BrowserControlAction,
+  BrowserControlError,
+  BrowserFrameDescriptor,
+  BrowserFrameTarget,
+  BrowserTabDescriptor,
+  BrowserTabOwnerDescriptor,
+  BrowserTabTarget,
+  BrowserWaitCriteria,
+  BrowserWaitResult,
+};
 import type { JsonValue } from "./json-value.js";
 import type {
   PluginRpcContract,
@@ -1573,6 +1593,67 @@ export interface PluginAiServices {
 }
 
 // ---------------------------------------------------------------------------
+// Connected BB Browser control plane.
+// ---------------------------------------------------------------------------
+
+export interface PluginBrowserTabFilter {
+  threadId?: string;
+  projectId?: string;
+  active?: boolean;
+}
+
+export interface PluginBrowserOpenOptions {
+  clientId?: string;
+  windowId?: string;
+  ownerId?: string;
+  threadId?: string;
+  projectId?: string;
+  timeoutMs?: number;
+}
+
+export interface PluginBrowser {
+  /** List connected and inactive Browser tabs during an audited tool or CLI call. */
+  listTabs(
+    context: PluginAgentToolContext | PluginCliContext,
+    filter?: PluginBrowserTabFilter,
+  ): readonly BrowserTabDescriptor[];
+  /** List visible panel owners that can create a first or subsequent tab. */
+  listOwners(
+    context: PluginAgentToolContext | PluginCliContext,
+    filter?: PluginBrowserTabFilter,
+  ): readonly BrowserTabOwnerDescriptor[];
+  /**
+   * Create a thread-owned native Browser tab for this tool or CLI context.
+   * If the destination thread is not mounted, BB runs it in the background
+   * without changing the visible app layout. Explicit thread/project options
+   * select another destination.
+   */
+  openTab(
+    context: PluginAgentToolContext | PluginCliContext,
+    url: string,
+    options?: PluginBrowserOpenOptions,
+  ): Promise<BrowserTabTarget>;
+  /**
+   * Run one bounded operation against an exact tab revision. BB never silently
+   * retargets a different client, window, tab, or post-navigation page.
+   *
+   * The `script` action executes full-trust code against the user's current
+   * browser session. It defaults to an isolated world; `world: "main"` is only
+   * for page-owned JavaScript state such as React hints. `context` must be the
+   * live context passed to an audited agent tool or CLI call; unfinished Browser
+   * work is cancelled when that call returns.
+   */
+  run(
+    target: BrowserTabTarget,
+    action: BrowserControlAction,
+    options: {
+      context: PluginAgentToolContext | PluginCliContext;
+      timeoutMs?: number;
+    },
+  ): Promise<JsonValue>;
+}
+
+// ---------------------------------------------------------------------------
 // Host control plane.
 // ---------------------------------------------------------------------------
 
@@ -1675,6 +1756,8 @@ export interface BbPluginApi {
   readonly status: PluginStatusApi;
   /** Read-only facts about the running server (loopback base URL). */
   readonly server: PluginServerApi;
+  /** Connected BB Browser discovery and exact-tab control. */
+  readonly experimental_browser: PluginBrowser;
   /** Server-to-daemon host control-plane declarations. */
   readonly hosts: PluginHosts;
   /**

@@ -7,7 +7,7 @@
   "files": [
     {
       "path": "registry/hooks/useBrowserDimmingModal.ts",
-      "content": "export function useBrowserDimmingModal(_active: boolean): void {}\n\nexport function useIsBrowserDimmingModalOpen(): boolean {\n  return false;\n}\n",
+      "content": "export function useBrowserDimmingModal(_active: boolean): void {}\nexport function useBrowserDimmingOverlay(_active: boolean): void {}\n\nexport function useIsBrowserDimmingModalOpen(): boolean {\n  return false;\n}\n",
       "type": "registry:hook",
       "target": "hooks/useBrowserDimmingModal.ts"
     }

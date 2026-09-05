@@ -6,14 +6,17 @@ import {
 } from "../src/desktop-browser-policy.js";
 
 describe("isAllowedBrowserUrl", () => {
-  it("allows http, https, and exact about:blank", () => {
+  it("allows web and local file navigation", () => {
     expect(isAllowedBrowserUrl("https://example.com")).toBe(true);
     expect(isAllowedBrowserUrl("http://example.com/path?q=1")).toBe(true);
-    expect(isAllowedBrowserUrl("about:blank")).toBe(true);
+    expect(isAllowedBrowserUrl("file:///Users/test/page.html")).toBe(true);
+    expect(isAllowedBrowserUrl("file://localhost/Users/test/page.html")).toBe(
+      true,
+    );
   });
 
-  it("blocks unsupported schemes and unparseable URLs", () => {
-    expect(isAllowedBrowserUrl("file:///etc/passwd")).toBe(false);
+  it("blocks remote files, executable schemes, and unparseable URLs", () => {
+    expect(isAllowedBrowserUrl("file://remote-host/etc/passwd")).toBe(false);
     expect(isAllowedBrowserUrl("javascript:alert(1)")).toBe(false);
     expect(isAllowedBrowserUrl("data:text/html,<h1>x</h1>")).toBe(false);
     expect(isAllowedBrowserUrl("about:config")).toBe(false);

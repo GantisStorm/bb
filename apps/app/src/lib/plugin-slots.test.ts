@@ -23,6 +23,9 @@ function PanelComponent(_props: PluginNavPanelProps) {
 function DirectiveComponent(_props: PluginMessageDirectiveProps) {
   return null;
 }
+function BrowserActionComponent() {
+  return null;
+}
 
 afterEach(() => {
   resetPluginSlotStoreForTest();
@@ -59,6 +62,32 @@ describe("plugin slot store", () => {
     ).toEqual(["alpha", "zeta"]);
     expect(snapshot.composerCustomizations).toHaveLength(1);
     expect(snapshot.composerCustomizations[0]?.pluginId).toBe("alpha");
+  });
+
+  it("orders Browser actions by plugin id and preserves registration order", () => {
+    setPluginSlotRegistrations(
+      "zeta",
+      registrationSet({
+        browserActions: [
+          { id: "z", title: "Zeta", component: BrowserActionComponent },
+        ],
+      }),
+    );
+    setPluginSlotRegistrations(
+      "alpha",
+      registrationSet({
+        browserActions: [
+          { id: "a1", title: "First", component: BrowserActionComponent },
+          { id: "a2", title: "Second", component: BrowserActionComponent },
+        ],
+      }),
+    );
+
+    expect(
+      getPluginSlotSnapshot().browserActions.map(
+        ({ pluginId, id }) => `${pluginId}/${id}`,
+      ),
+    ).toEqual(["alpha/a1", "alpha/a2", "zeta/z"]);
   });
 
   it("replaces a plugin's registrations wholesale (never appends)", () => {

@@ -1,0 +1,39 @@
+{
+  "name": "bb-plugin-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Controls explicitly selected visible BB Browser tabs.",
+  "engines": {
+    "bb": ">=0.40.0",
+    "bbPluginSdk": ">=0.4.32"
+  },
+  "bb": {
+    "name": "Browser",
+    "description": "Controls explicitly selected visible BB Browser tabs.",
+    "branding": {
+      "icon": "Globe"
+    },
+    "server": "./src/server.ts",
+    "skills": [
+      "skills"
+    ]
+  },
+  "keywords": [
+    "bb-plugin"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@bb/server-contract": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.1"
+  }
+}

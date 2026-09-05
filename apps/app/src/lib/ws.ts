@@ -1,6 +1,9 @@
 import ReconnectingWebSocket from "partysocket/ws";
 import {
   changedMessageLenientSchema,
+  browserControlCancelMessageSchema,
+  browserControlRequestMessageSchema,
+  browserOpenTabRequestMessageSchema,
   pluginSignalLenientSchema,
   pongMessageLenientSchema,
   realtimeSubscriptionTargetKey,
@@ -10,6 +13,11 @@ import {
 import type {
   ClientMessage,
   ChangedMessage,
+  BrowserClientStateMessage,
+  BrowserControlRequestMessage,
+  BrowserControlResponseMessage,
+  BrowserOpenTabRequestMessage,
+  BrowserOpenTabResponseMessage,
   PluginSignal,
   RealtimeSubscriptionTarget,
   ThreadOpenFile,
@@ -34,6 +42,16 @@ export type WebSocketConnectedEvent =
     };
 type ConnectedCallback = (event: WebSocketConnectedEvent) => void;
 type ConnectionStateCallback = () => void;
+type BrowserControlRequestCallback = (
+  message: BrowserControlRequestMessage,
+) => void;
+type BrowserOpenTabRequestCallback = (
+  message: BrowserOpenTabRequestMessage,
+) => void;
+type BrowserControlCancelCallback = (message: {
+  requestId: string;
+  reason: "cancelled" | "timeout" | "client-disconnected";
+}) => void;
 export type WebSocketConnectionState =
   | "connecting"
   | "connected"
@@ -76,6 +94,15 @@ export class WebSocketManager {
   private threadOpenCallbacks = new Set<ThreadOpenCallback>();
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
+  private browserControlRequestCallbacks =
+    new Set<BrowserControlRequestCallback>();
+  private browserOpenTabRequestCallbacks =
+    new Set<BrowserOpenTabRequestCallback>();
+  private browserControlCancelCallbacks =
+    new Set<BrowserControlCancelCallback>();
+  // Ephemeral "open this file in the secondary panel" intents, keyed by thread.
+  // Held in memory only (cleared on reload) so a thread that is not currently
+  // viewed opens the file when it is next viewed. Last write wins per thread.
   private pendingOpenFileByThreadId = new Map<string, ThreadOpenFile>();
   private connectedCallbacks = new Set<ConnectedCallback>();
   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
@@ -295,6 +322,33 @@ export class WebSocketManager {
       return;
     }
 
+    const browserOpenTabRequest =
+      browserOpenTabRequestMessageSchema.safeParse(parsed);
+    if (browserOpenTabRequest.success) {
+      for (const callback of this.browserOpenTabRequestCallbacks) {
+        callback(browserOpenTabRequest.data);
+      }
+      return;
+    }
+
+    const browserControlRequest =
+      browserControlRequestMessageSchema.safeParse(parsed);
+    if (browserControlRequest.success) {
+      for (const callback of this.browserControlRequestCallbacks) {
+        callback(browserControlRequest.data);
+      }
+      return;
+    }
+
+    const browserControlCancel =
+      browserControlCancelMessageSchema.safeParse(parsed);
+    if (browserControlCancel.success) {
+      for (const callback of this.browserControlCancelCallbacks) {
+        callback(browserControlCancel.data);
+      }
+      return;
+    }
+
     const threadPaneAction =
       threadPaneActionSignalLenientSchema.safeParse(parsed);
     if (threadPaneAction.success) {
@@ -397,6 +451,38 @@ export class WebSocketManager {
     };
   }
 
+  onBrowserOpenTabRequest(callback: BrowserOpenTabRequestCallback): () => void {
+    this.browserOpenTabRequestCallbacks.add(callback);
+    return () => this.browserOpenTabRequestCallbacks.delete(callback);
+  }
+
+  onBrowserControlRequest(callback: BrowserControlRequestCallback): () => void {
+    this.browserControlRequestCallbacks.add(callback);
+    return () => this.browserControlRequestCallbacks.delete(callback);
+  }
+
+  onBrowserControlCancel(callback: BrowserControlCancelCallback): () => void {
+    this.browserControlCancelCallbacks.add(callback);
+    return () => this.browserControlCancelCallbacks.delete(callback);
+  }
+
+  sendBrowserClientState(message: BrowserClientStateMessage): void {
+    this.sendMessage(message);
+  }
+
+  sendBrowserOpenTabResponse(message: BrowserOpenTabResponseMessage): void {
+    this.sendMessage(message);
+  }
+
+  sendBrowserControlResponse(message: BrowserControlResponseMessage): void {
+    this.sendMessage(message);
+  }
+
+  /**
+   * Return and clear the buffered "open file" intent for a thread, if any. The
+   * secondary panel calls this when the thread becomes visible so the file
+   * opens exactly once and is not re-opened on a later visit.
+   */
   consumePendingOpenFile(threadId: string): ThreadOpenFile | null {
     const pending = this.pendingOpenFileByThreadId.get(threadId);
     if (!pending) {

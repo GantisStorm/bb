@@ -13,6 +13,10 @@ import {
 import {
   PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES,
   PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
+  type BrowserControlAction,
+  type BrowserTabDescriptor,
+  type BrowserTabOwnerDescriptor,
+  type BrowserTabTarget,
   type JsonValue,
 } from "@bb/domain";
 import type {
@@ -24,6 +28,7 @@ import type {
   PluginAgentToolResult,
   PluginAgents,
   PluginBackground,
+  PluginBrowser,
   PluginCli,
   PluginCliCommandInfo,
   PluginCliContext,
@@ -419,7 +424,25 @@ export function createPluginApi(options: {
   getAppUrl: () => string | null;
   getLoopbackBaseUrl: () => string | undefined;
   publishSignal: (channel: string, payload: unknown) => void;
+  listBrowserTabs?: () => readonly BrowserTabDescriptor[];
+  listBrowserTabOwners?: () => readonly BrowserTabOwnerDescriptor[];
+  openBrowserTab?: (args: {
+    url: string;
+    clientId?: string;
+    windowId?: string;
+    ownerId?: string;
+    threadId?: string;
+    projectId?: string;
+    signal?: AbortSignal;
+    timeoutMs: number;
+  }) => Promise<BrowserTabTarget>;
+  runBrowserControl?: (
+    target: BrowserTabTarget,
+    action: BrowserControlAction,
+    options: { signal?: AbortSignal; timeoutMs: number },
+  ) => Promise<JsonValue>;
   settingsChanged: () => void;
+  /** Marks the plugin needs-configuration in the loader's status table. */
   reportNeedsConfiguration: (message: string) => void;
   isAgentToolNameTaken: (name: string) => string | undefined;
   reportAgentToolProblem: (message: string) => void;
@@ -488,6 +511,14 @@ export function createPluginApi(options: {
     getAppUrl,
     getLoopbackBaseUrl,
     publishSignal,
+    listBrowserTabs = () => [],
+    listBrowserTabOwners = () => [],
+    openBrowserTab = () =>
+      Promise.reject(
+        new Error("Browser tab creation is unavailable in this host"),
+      ),
+    runBrowserControl = () =>
+      Promise.reject(new Error("Browser control is unavailable in this host")),
     settingsChanged,
     reportNeedsConfiguration,
     isAgentToolNameTaken,
@@ -519,6 +550,10 @@ export function createPluginApi(options: {
     listeners: [],
   };
   const databaseHandles: Database.Database[] = [];
+  const activeBrowserRuns = new Map<
+    PluginAgentToolContext | PluginCliContext,
+    Set<AbortController>
+  >();
   const threadEventHandlers: PluginThreadEventHandlers = {
     "thread.created": [],
     "thread.active": [],
@@ -1171,12 +1206,23 @@ export function createPluginApi(options: {
             : null,
         inputSchema,
         parse,
-        execute: (
-          tool.execute as (
-            params: unknown,
-            ctx: PluginAgentToolContext,
-          ) => PluginAgentToolResult | Promise<PluginAgentToolResult>
-        ).bind(tool),
+        async execute(params, ctx) {
+          const controllers = new Set<AbortController>();
+          activeBrowserRuns.set(ctx, controllers);
+          try {
+            return await (
+              tool.execute as (
+                params: unknown,
+                ctx: PluginAgentToolContext,
+              ) => PluginAgentToolResult | Promise<PluginAgentToolResult>
+            ).call(tool, params, ctx);
+          } finally {
+            activeBrowserRuns.delete(ctx);
+            for (const controller of controllers) {
+              controller.abort("agent-tool-completed");
+            }
+          }
+        },
       };
       agentTools.push(record);
     },
@@ -1280,7 +1326,18 @@ export function createPluginApi(options: {
         name,
         summary: registration.summary,
         commands: validatedCommands,
-        run: registration.run.bind(registration),
+        async run(argv, ctx) {
+          const controllers = new Set<AbortController>();
+          activeBrowserRuns.set(ctx, controllers);
+          try {
+            return await registration.run.call(registration, argv, ctx);
+          } finally {
+            activeBrowserRuns.delete(ctx);
+            for (const controller of controllers) {
+              controller.abort("cli-completed");
+            }
+          }
+        },
       };
     },
   };
@@ -1316,6 +1373,130 @@ export function createPluginApi(options: {
     get experimental_dataDir(): string {
       assertLive();
       return dataDir;
+    },
+  };
+
+  const browser: PluginBrowser = {
+    listTabs(context, filter = {}) {
+      assertLive();
+      if (!activeBrowserRuns.has(context)) {
+        throw new Error(
+          "Browser discovery is available only during an active native agent tool or CLI call",
+        );
+      }
+      return listBrowserTabs().filter(
+        (tab) =>
+          (filter.threadId === undefined || tab.threadId === filter.threadId) &&
+          (filter.projectId === undefined ||
+            tab.projectId === filter.projectId) &&
+          (filter.active === undefined || tab.active === filter.active),
+      );
+    },
+    listOwners(context, filter = {}) {
+      assertLive();
+      if (!activeBrowserRuns.has(context)) {
+        throw new Error(
+          "Browser owner discovery is available only during an active native agent tool or CLI call",
+        );
+      }
+      return listBrowserTabOwners().filter(
+        (owner) =>
+          (filter.threadId === undefined ||
+            owner.threadId === filter.threadId) &&
+          (filter.projectId === undefined ||
+            owner.projectId === filter.projectId) &&
+          (filter.active === undefined || owner.active === filter.active),
+      );
+    },
+    openTab(context, url, openOptions = {}) {
+      assertLive();
+      const controllers = activeBrowserRuns.get(context);
+      if (controllers === undefined) {
+        throw new Error(
+          "Browser tab creation is available only during an active native agent tool or CLI call",
+        );
+      }
+      const timeoutMs = openOptions.timeoutMs ?? 30_000;
+      if (
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < 100 ||
+        timeoutMs > 120_000
+      ) {
+        throw new Error("Browser open timeout must be 100–120000 ms");
+      }
+      const controller = new AbortController();
+      const signal = context.signal;
+      const abort = () => controller.abort(signal?.reason);
+      if (signal?.aborted) abort();
+      else if (typeof signal?.addEventListener === "function") {
+        signal.addEventListener("abort", abort, { once: true });
+      }
+      controllers.add(controller);
+      return openBrowserTab({
+        url,
+        ...(openOptions.clientId === undefined
+          ? {}
+          : { clientId: openOptions.clientId }),
+        ...(openOptions.windowId === undefined
+          ? {}
+          : { windowId: openOptions.windowId }),
+        ...(openOptions.ownerId === undefined
+          ? {}
+          : { ownerId: openOptions.ownerId }),
+        ...(openOptions.threadId === undefined
+          ? context.threadId === null || context.threadId === undefined
+            ? {}
+            : { threadId: context.threadId }
+          : { threadId: openOptions.threadId }),
+        ...(openOptions.projectId === undefined
+          ? context.projectId === null || context.projectId === undefined
+            ? {}
+            : { projectId: context.projectId }
+          : { projectId: openOptions.projectId }),
+        timeoutMs,
+        signal: controller.signal,
+      }).finally(() => {
+        controllers.delete(controller);
+        if (typeof signal?.removeEventListener === "function") {
+          signal.removeEventListener("abort", abort);
+        }
+      });
+    },
+    run(target, action, runOptions) {
+      assertLive();
+      const controllers = activeBrowserRuns.get(runOptions.context);
+      if (controllers === undefined) {
+        throw new Error(
+          "Browser control is available only during an active native agent tool or CLI call",
+        );
+      }
+      const timeoutMs = runOptions.timeoutMs ?? 30_000;
+      if (
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < 100 ||
+        timeoutMs > 120_000
+      ) {
+        throw new Error("Browser action timeout must be 100–120000 ms");
+      }
+      const controller = new AbortController();
+      const signal = runOptions.context.signal;
+      const abort = () => controller.abort(signal?.reason);
+      if (signal?.aborted) abort();
+      else if (typeof signal?.addEventListener === "function") {
+        signal.addEventListener("abort", abort, {
+          once: true,
+        });
+      }
+      controllers.add(controller);
+      return runBrowserControl(target, action, {
+        timeoutMs,
+        signal: controller.signal,
+      }).finally(() => {
+        controllers.delete(controller);
+        if (typeof signal?.removeEventListener === "function") {
+          signal.removeEventListener("abort", abort);
+        }
+      });
     },
   };
 
@@ -1522,6 +1703,7 @@ export function createPluginApi(options: {
     experimental_hooks,
     status,
     server,
+    experimental_browser: browser,
     hosts,
     experimental_aiServices,
     get sdk(): BbSdk {
@@ -1608,6 +1790,11 @@ export function createPluginApi(options: {
     },
     invalidate() {
       invalidated = true;
+      for (const controllers of activeBrowserRuns.values()) {
+        for (const controller of controllers)
+          controller.abort("plugin-disposed");
+      }
+      activeBrowserRuns.clear();
     },
   };
 }
