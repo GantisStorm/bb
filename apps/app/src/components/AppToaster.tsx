@@ -1,4 +1,3 @@
-import { useEffect, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Toaster, type ToasterProps } from "sonner";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -36,11 +35,6 @@ export function AppToaster({
   const renderedSwipeDirections =
     swipeDirections ??
     (isCompactViewport ? COMPACT_TOAST_SWIPE_DIRECTIONS : undefined);
-  useReliableToastSwipes({
-    enabled: isCompactViewport,
-    swipeDirections: renderedSwipeDirections,
-    toasterRef,
-  });
   if (typeof document === "undefined") return null;
   return createPortal(
     <Toaster

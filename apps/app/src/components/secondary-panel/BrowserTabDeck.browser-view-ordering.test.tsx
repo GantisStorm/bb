@@ -62,7 +62,6 @@ function makeBrowserTab(id: string, url: string): BrowserFixedPanelTab {
   };
 }
 
-
 function createRecordingBrowserApi(): RecordingBrowserApi {
   const calls: BrowserCall[] = [];
   const attachments: BbDesktopBrowserAttachRequest[] = [];
@@ -294,17 +293,18 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         ...makeBrowserTab("native-tab", "https://example.com"),
         desktopTarget: { ...desktopTarget, [field]: "elsewhere" },
       };
-      const deck = (browserTab: BrowserFixedPanelTab) => (
-        <BrowserTabDeck
-          browserTabs={[browserTab]}
-          activeBrowserTabId={browserTab.id}
-          environmentId="env-1"
-          canShowNativeBrowserView
-          threadId="thread-1"
-          onUpdate={() => {}}
-        />
+      const view = render(
+        <TooltipProvider>
+          <BrowserTabDeck
+            browserTabs={[tab]}
+            activeBrowserTabId={tab.id}
+            environmentId="env-1"
+            canShowNativeBrowserView
+            threadId="thread-1"
+            onUpdate={() => {}}
+          />
+        </TooltipProvider>,
       );
-      const view = render(deck(tab));
       await act(async () => {});
       expect(
         screen.getByText(
@@ -312,7 +312,18 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
         ),
       ).not.toBeNull();
       expect(attachments).toEqual([]);
-      view.rerender(deck({ ...tab, desktopTarget }));
+      view.rerender(
+        <TooltipProvider>
+          <BrowserTabDeck
+            browserTabs={[{ ...tab, desktopTarget }]}
+            activeBrowserTabId={tab.id}
+            environmentId="env-1"
+            canShowNativeBrowserView
+            threadId="thread-1"
+            onUpdate={() => {}}
+          />
+        </TooltipProvider>,
+      );
       await waitFor(() => expect(attachments).toHaveLength(1));
       expect(attachments[0]?.existingOnly).toBe(true);
     },
@@ -366,7 +377,6 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
     expect(
       screen.queryByRole("heading", { name: "Browse the web" }),
     ).toBeNull();
-
 
     act(() => {
       emitState({
@@ -474,7 +484,6 @@ describe("BrowserTabDeck native browser first-show ordering", () => {
     expect(restoredBoundsIndex).toBeGreaterThan(hideIndex);
     expect(restoredShowIndex).toBeGreaterThan(restoredBoundsIndex);
   });
-
 
   it("shows an unfocused split view without moving native focus", async () => {
     const { api, attachments, emitState, visibility, visibilityWithoutFocus } =

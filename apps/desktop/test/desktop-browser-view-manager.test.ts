@@ -1,15 +1,3 @@
-import type { RenderProcessGoneDetails, WebContentsView } from "electron";
-import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { WebSocket, WebSocketServer } from "ws";
-import { z } from "zod";
-import {
-  DESKTOP_BROWSER_BROKER_DESCRIPTOR_FILE,
-  desktopBrowserRegistrationSchema,
-  desktopBrowserChangedSchema,
-} from "@bb/host-daemon-contract";
 import type {
   CookiesSetDetails,
   RenderProcessGoneDetails,
@@ -160,7 +148,6 @@ interface FakeFindInPageCall {
 }
 
 interface FakeWebContentsEventMap {
-  destroyed: FakeVoidWebContentsListener;
   focus: FakeVoidWebContentsListener;
   "console-message": FakeConsoleMessageListener;
   "before-input-event": FakeBeforeInputListener;
@@ -178,16 +165,6 @@ interface FakeWebContentsEventMap {
   "context-menu": FakeContextMenuListener;
   "render-process-gone": FakeRenderProcessGoneListener;
   "found-in-page": FakeFoundInPageListener;
-}
-
-interface FakeDebuggerEventMap {
-  detach: () => void;
-  message: (
-    event: FakeWebContentsEvent,
-    method: string,
-    params: unknown,
-    sessionId: string,
-  ) => void;
 }
 
 interface FakeWebFrameMain {
@@ -470,15 +447,8 @@ const electronMock = vi.hoisted(() => {
       return {};
     }
   }
+
   class FakeWebContents {
-    public readonly debugger = new FakeDebugger();
-    private backgroundThrottling = true;
-    getBackgroundThrottling(): boolean {
-      return this.backgroundThrottling;
-    }
-    setBackgroundThrottling(value: boolean): void {
-      this.backgroundThrottling = value;
-    }
     public activeHistoryIndex = 0;
     public canGoBackResult = false;
     public canGoForwardResult = false;
@@ -554,9 +524,7 @@ const electronMock = vi.hoisted(() => {
     }
 
     close(): void {
-      if (this.destroyed) return;
       this.destroyed = true;
-      for (const listener of this.listeners.destroyed) listener();
     }
 
     focus(): void {
@@ -613,18 +581,6 @@ const electronMock = vi.hoisted(() => {
       listener: FakeWebContentsEventMap[TEventName],
     ): void {
       this.listeners[eventName].push(listener);
-    }
-
-    off<TEventName extends keyof FakeWebContentsEventMap>(
-      eventName: TEventName,
-      listener: FakeWebContentsEventMap[TEventName],
-    ): void {
-      const index = this.listeners[eventName].indexOf(listener);
-      if (index !== -1) this.listeners[eventName].splice(index, 1);
-    }
-
-    emitDidStartNavigation(): void {
-      for (const listener of this.listeners["did-start-navigation"]) listener();
     }
 
     reload(): void {
@@ -704,8 +660,8 @@ const electronMock = vi.hoisted(() => {
         );
       }
     }
+
     emitPageTitleUpdated(title: string): boolean {
-      this.title = title;
       const event = new FakePreventableEventImpl();
       for (const listener of this.listeners["page-title-updated"]) {
         listener(event, title);
@@ -768,9 +724,7 @@ const electronMock = vi.hoisted(() => {
     public readonly webContents: FakeWebContents;
     public visible = false;
 
-    constructor(
-      public readonly options: { webPreferences: { partition: string } },
-    ) {
+    constructor() {
       this.webContents = new FakeWebContents(nextWebContentsId);
       nextWebContentsId += 1;
     }
@@ -1093,8 +1047,8 @@ const electronMock = vi.hoisted(() => {
       }
     },
     FakeWebContentsView: class extends FakeWebContentsView {
-      constructor(options: { webPreferences: { partition: string } }) {
-        super(options);
+      constructor() {
+        super();
         fakeViews.push(this);
       }
     },
@@ -1118,7 +1072,6 @@ vi.mock("electron", () => ({
   WebContentsView: electronMock.FakeWebContentsView,
   app: electronMock.app,
   session: electronMock.session,
-  nativeImage: { createFromBuffer: () => electronMock.fakeCapturedImage },
   webContents: electronMock.webContents,
 }));
 
@@ -1237,7 +1190,6 @@ function attachBrowserTab(args: AttachBrowserTabArgs): void {
   args.manager.attach({
     hostWindow: args.hostWindow,
     request: {
-      threadId: "thread-1",
       tabId: args.tabId,
       url: args.url,
       bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -1306,480 +1258,6 @@ function scopedOpenTabPushesOf(
   }
   return pushes;
 }
-
-function createCdpAdapterFixture() {
-  const fixture = createRendererRecoveryFixture(91);
-  const createTab = vi.fn(async () => "browser:a");
-  const activateTab = vi.fn(async () => undefined);
-  const closeTab = vi.fn(async () => undefined);
-  const adapter = createDesktopBrowserCdpAdapter({
-    manager: fixture.manager,
-    createTab,
-    activateTab,
-    closeTab,
-  });
-  const scope = { hostWebContentsId: 91, threadId: "thread-1" };
-  const page = adapter.listTabs(scope)[0];
-  if (page === undefined) throw new Error("Expected a native CDP page");
-  return { ...fixture, adapter, scope, page, createTab, activateTab, closeTab };
-}
-
-describe("DesktopBrowserCdpAdapter", () => {
-  it.each(["complete", "timeout"])(
-    "requests frames only while a native screenshot is pending: %s",
-    async (outcome) => {
-      vi.useFakeTimers();
-      const { page, view } = createCdpAdapterFixture();
-      try {
-        page.attach();
-        await Promise.resolve();
-        let complete: (value: { data: string }) => void = () => {
-          throw new Error("Screenshot not started");
-        };
-        const screenshot = new Promise<{ data: string }>((resolve) => {
-          complete = resolve;
-        });
-        view.webContents.debugger.sendCommand.mockReturnValueOnce(screenshot);
-        const frames = vi
-          .spyOn(view.webContents, "capturePage")
-          .mockResolvedValue(electronMock.fakeCapturedImage);
-        const params = {
-          format: "jpeg",
-          quality: 63,
-          clip: { x: 2, y: 3, width: 400, height: 200, scale: 0.5 },
-          captureBeyondViewport: true,
-        };
-        const pending = page.send("Page.captureScreenshot", params, "child");
-        const assertion =
-          outcome === "timeout"
-            ? expect(pending).rejects.toThrow(
-                "Native browser screenshot timed out",
-              )
-            : expect(pending).resolves.toEqual({ data: "encoded-image" });
-        await vi.advanceTimersByTimeAsync(48);
-        expect(frames.mock.calls.length).toBeGreaterThan(1);
-        expect(frames).toHaveBeenLastCalledWith(undefined, {
-          stayHidden: true,
-          stayAwake: true,
-        });
-        expect(view.webContents.debugger.sendCommand).toHaveBeenLastCalledWith(
-          "Page.captureScreenshot",
-          params,
-          "child",
-        );
-        if (outcome === "complete") complete({ data: "encoded-image" });
-        else await vi.advanceTimersByTimeAsync(5000);
-        await assertion;
-        const frameCount = frames.mock.calls.length;
-        await vi.advanceTimersByTimeAsync(1000);
-        expect(frames).toHaveBeenCalledTimes(frameCount);
-        expect(view.webContents.focusCalls).toBe(1);
-        expect(vi.getTimerCount()).toBe(0);
-        complete({ data: "late-image" });
-      } finally {
-        page.detach();
-        vi.useRealTimers();
-      }
-    },
-  );
-  it.each(["failure", "cancel", "reattach"])(
-    "blocks commands when initialization encounters %s",
-    async (mode) => {
-      const { page, view } = createCdpAdapterFixture();
-      let complete: () => void = () => {
-        throw new Error("Expected pending preparation");
-      };
-      const prepared = new Promise<Record<string, never>>((resolve, reject) => {
-        complete = () =>
-          mode === "failure"
-            ? reject(new Error("Preparation failed"))
-            : resolve({});
-      });
-      const nativeSend = view.webContents.debugger.sendCommand;
-      nativeSend.mockReturnValueOnce(prepared);
-      page.attach();
-      const controller = new AbortController();
-      const pending = page.send(
-        "Input.dispatchMouseEvent",
-        { type: "mousePressed" },
-        "child",
-        controller.signal,
-      );
-      const rejected = expect(pending).rejects.toThrow(
-        mode === "failure"
-          ? /Preparation failed/
-          : mode === "cancel"
-            ? /abort/i
-            : /attachment changed/,
-      );
-      if (mode === "cancel") controller.abort();
-      if (mode === "reattach") {
-        page.detach();
-        page.attach();
-      }
-      complete();
-      await rejected;
-      expect(
-        nativeSend.mock.calls.every(
-          ([method]) => method === "Emulation.setFocusEmulationEnabled",
-        ),
-      ).toBe(true);
-      if (mode === "cancel") {
-        await page.send(
-          "Runtime.enable",
-          {},
-          "other",
-          new AbortController().signal,
-        );
-        expect(nativeSend).toHaveBeenLastCalledWith(
-          "Runtime.enable",
-          {},
-          "other",
-        );
-      }
-      page.detach();
-    },
-  );
-
-  it("retains live wrappers while hidden and stops exposing removed targets", async () => {
-    const { manager, hostWindow, view, adapter, scope, page } =
-      createCdpAdapterFixture();
-    expect(adapter.listTabs({ ...scope, threadId: "other" })).toEqual([]);
-    expect(adapter.listTabs({ ...scope, hostWebContentsId: 910 })).toEqual([]);
-    manager.setVisible({
-      hostWindow,
-      request: { tabId: "browser:a", visible: false },
-    });
-    view.webContents.emitDidNavigate("https://example.com/next");
-    view.webContents.emitPageTitleUpdated("Next");
-    expect(adapter.listTabs(scope)[0]).toBe(page);
-    expect(page.url).toBe("https://example.com/next");
-    expect(page.title).toBe("Next");
-    page.attach();
-    await Promise.resolve();
-    page.attach();
-    await Promise.resolve();
-    expect(view.webContents.debugger.attachCalls).toEqual(["1.3"]);
-    manager.detach({ hostWindow, tabId: "browser:a" });
-    expect(adapter.listTabs(scope)).toEqual([]);
-    await expect(page.send("Runtime.enable", {})).rejects.toThrow(
-      "no longer available",
-    );
-    expect(
-      view.webContents.debugger.sendCommand,
-    ).toHaveBeenCalledExactlyOnceWith("Emulation.setFocusEmulationEnabled", {
-      enabled: true,
-    });
-  });
-
-  it("validates debugger JSON and forwards native child session IDs", async () => {
-    const { page, view } = createCdpAdapterFixture();
-    const nativeDebugger = view.webContents.debugger;
-    page.attach();
-    await Promise.resolve();
-    nativeDebugger.sendCommand.mockResolvedValueOnce({
-      result: { value: [1, null, "ok"] },
-    });
-    await expect(
-      page.send("Runtime.evaluate", { expression: "value" }, "child-1"),
-    ).resolves.toEqual({
-      result: { value: [1, null, "ok"] },
-    });
-    expect(nativeDebugger.sendCommand).toHaveBeenCalledWith(
-      "Runtime.evaluate",
-      { expression: "value" },
-      "child-1",
-    );
-    nativeDebugger.sendCommand.mockResolvedValueOnce({
-      value: () => undefined,
-    });
-    await expect(page.send("Runtime.evaluate", {})).rejects.toThrow();
-    nativeDebugger.sendCommand.mockResolvedValueOnce([]);
-    await expect(page.send("Runtime.evaluate", {})).rejects.toThrow();
-
-    const listener = vi.fn();
-    const unsubscribe = page.onMessage(listener);
-    nativeDebugger.emitMessage(
-      "Runtime.consoleAPICalled",
-      { args: [{ value: "ok" }] },
-      "child-1",
-    );
-    nativeDebugger.emitMessage(
-      "Runtime.consoleAPICalled",
-      { value: () => undefined },
-      "child-1",
-    );
-    nativeDebugger.emitMessage("Runtime.consoleAPICalled", [], "child-1");
-    expect(listener).toHaveBeenCalledExactlyOnceWith(
-      "Runtime.consoleAPICalled",
-      { args: [{ value: "ok" }] },
-      "child-1",
-    );
-    unsubscribe();
-    nativeDebugger.emitMessage("Runtime.consoleAPICalled", {}, "");
-    expect(listener).toHaveBeenCalledTimes(1);
-  });
-
-  it("rejects another debugger controller and invalidates commands across detach and reattach", async () => {
-    const { page, view } = createCdpAdapterFixture();
-    const nativeDebugger = view.webContents.debugger;
-    nativeDebugger.attach("external");
-    expect(() => page.attach()).toThrow("already has a controller");
-    page.detach();
-    expect(nativeDebugger.isAttached()).toBe(true);
-    expect(nativeDebugger.detachCalls).toBe(0);
-    nativeDebugger.detach();
-    page.attach();
-    await Promise.resolve();
-    expect(view.webContents.getBackgroundThrottling()).toBe(false);
-    const listener = vi.fn();
-    const offDetach = page.onDetach(listener);
-    let completeResponse: () => void = () => {
-      throw new Error("Expected a pending debugger response");
-    };
-    const response = new Promise<Record<string, never>>((resolve) => {
-      completeResponse = () => resolve({});
-    });
-    nativeDebugger.sendCommand.mockReturnValueOnce(response);
-    const pending = page.send("Runtime.enable", {});
-    nativeDebugger.detach();
-    expect(listener).toHaveBeenCalledTimes(1);
-    await expect(page.send("Runtime.enable", {})).rejects.toThrow(
-      "not attached",
-    );
-    page.attach();
-    await Promise.resolve();
-    completeResponse();
-    await expect(pending).rejects.toThrow("attachment changed");
-    offDetach();
-    page.detach();
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(view.webContents.getBackgroundThrottling()).toBe(true);
-  });
-
-  function holdCdpCaptures(view: (typeof electronMock.fakeViews)[number]) {
-    const captures: Array<() => void> = [];
-    view.webContents.debugger.sendCommand.mockImplementation((method) => {
-      if (method !== "Page.captureScreenshot") return Promise.resolve({});
-      return new Promise((resolve) =>
-        captures.push(() => resolve({ data: "png" })),
-      );
-    });
-    return () => {
-      const complete = captures.shift();
-      if (complete === undefined)
-        throw new Error("Expected pending render capture");
-      complete();
-    };
-  }
-
-  it("shares the initial render barrier without reordering pointer commands", async () => {
-    const { page, view } = createCdpAdapterFixture();
-    const completeCapture = holdCdpCaptures(view);
-    page.attach();
-    await Promise.resolve();
-    const nativeSend = view.webContents.debugger.sendCommand;
-    const down = page.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: 20,
-      y: 20,
-    });
-    const up = page.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: 20,
-      y: 20,
-    });
-    expect(nativeSend).toHaveBeenNthCalledWith(
-      2,
-      "Page.captureScreenshot",
-      {
-        format: "png",
-        captureBeyondViewport: false,
-        optimizeForSpeed: true,
-      },
-      undefined,
-    );
-    completeCapture();
-    await Promise.all([down, up]);
-    expect(nativeSend.mock.calls.slice(2).map((call) => call[1])).toEqual([
-      { type: "mousePressed", x: 20, y: 20 },
-      { type: "mouseReleased", x: 20, y: 20 },
-    ]);
-    await page.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: [],
-    });
-    expect(
-      nativeSend.mock.calls.filter(
-        (call) => call[0] === "Page.captureScreenshot",
-      ),
-    ).toHaveLength(1);
-    view.webContents.emitDidStartNavigation();
-    const next = page.send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: 30,
-      y: 30,
-    });
-    expect(
-      nativeSend.mock.calls.filter(
-        (call) => call[0] === "Page.captureScreenshot",
-      ),
-    ).toHaveLength(2);
-    completeCapture();
-    await next;
-    page.detach();
-  });
-
-  it.each(["navigation", "reattach"])(
-    "rejects buffered input after %s changes the page",
-    async (change) => {
-      const { page, view } = createCdpAdapterFixture();
-      const completeCapture = holdCdpCaptures(view);
-      page.attach();
-      await Promise.resolve();
-      const pending = page.send("Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: 20,
-        y: 20,
-      });
-      const rejected = expect(pending).rejects.toThrow("changed before input");
-      if (change === "navigation") view.webContents.emitDidStartNavigation();
-      else {
-        page.detach();
-        page.attach();
-        await Promise.resolve();
-      }
-      completeCapture();
-      await rejected;
-      expect(
-        view.webContents.debugger.sendCommand.mock.calls
-          .map((call) => call[0])
-          .filter((method) => method !== "Emulation.setFocusEmulationEnabled"),
-      ).toEqual(["Page.captureScreenshot"]);
-      const next = page.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: 30,
-        y: 30,
-      });
-      completeCapture();
-      await next;
-      expect(
-        view.webContents.debugger.sendCommand.mock.calls
-          .map((call) => call[0])
-          .filter((method) => method !== "Emulation.setFocusEmulationEnabled"),
-      ).toEqual([
-        "Page.captureScreenshot",
-        "Page.captureScreenshot",
-        "Input.dispatchMouseEvent",
-      ]);
-      page.detach();
-    },
-  );
-
-  it("retries a failed render capture before dispatching later input", async () => {
-    const { page, view } = createCdpAdapterFixture();
-    page.attach();
-    await Promise.resolve();
-    const nativeSend = view.webContents.debugger.sendCommand;
-    nativeSend.mockRejectedValueOnce(new Error("Temporary capture failure"));
-    await expect(
-      page.send("Input.dispatchMouseEvent", { type: "mousePressed" }),
-    ).rejects.toThrow("Temporary capture failure");
-    nativeSend.mockResolvedValueOnce({ data: "png" });
-    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved" });
-    expect(
-      nativeSend.mock.calls
-        .map((call) => call[0])
-        .filter((method) => method !== "Emulation.setFocusEmulationEnabled"),
-    ).toEqual([
-      "Page.captureScreenshot",
-      "Page.captureScreenshot",
-      "Input.dispatchMouseEvent",
-    ]);
-    page.detach();
-  });
-
-  it("cancels one session's buffered pointer without cancelling another session's input", async () => {
-    const { page, view } = createCdpAdapterFixture();
-    const completeCapture = holdCdpCaptures(view);
-    page.attach();
-    await Promise.resolve();
-    const controller = new AbortController();
-    const cancelled = page.send(
-      "Input.dispatchMouseEvent",
-      { type: "mousePressed" },
-      "child",
-      controller.signal,
-    );
-    const rejected = expect(cancelled).rejects.toThrow(/abort/i);
-    const surviving = page.send(
-      "Input.dispatchMouseEvent",
-      { type: "mouseMoved" },
-      "child",
-      new AbortController().signal,
-    );
-    controller.abort();
-    completeCapture();
-    await rejected;
-    await surviving;
-    expect(view.webContents.debugger.sendCommand.mock.calls).toEqual([
-      ["Emulation.setFocusEmulationEnabled", { enabled: true }],
-      [
-        "Page.captureScreenshot",
-        { format: "png", captureBeyondViewport: false, optimizeForSpeed: true },
-        undefined,
-      ],
-      ["Input.dispatchMouseEvent", { type: "mouseMoved" }, "child"],
-    ]);
-    page.detach();
-  });
-
-  it("routes lifecycle callbacks only for registered scoped tabs and forwards manager notifications", async () => {
-    const { manager, adapter, scope, view, createTab, activateTab, closeTab } =
-      createCdpAdapterFixture();
-    const { signal } = new AbortController();
-    await expect(
-      adapter.createTab(scope, "https://example.com", signal),
-    ).resolves.toBe("browser:a");
-    expect(createTab).toHaveBeenCalledWith(
-      scope,
-      "https://example.com",
-      signal,
-    );
-    createTab.mockResolvedValueOnce("outside");
-    await expect(
-      adapter.createTab(scope, "https://example.com", signal),
-    ).rejects.toThrow("outside the requested scope");
-    await expect(
-      adapter.activateTab({ ...scope, threadId: "other" }, "browser:a", signal),
-    ).rejects.toThrow("outside the requested scope");
-    await expect(adapter.closeTab(scope, "outside", signal)).rejects.toThrow(
-      "outside the requested scope",
-    );
-    expect(activateTab).not.toHaveBeenCalled();
-    expect(closeTab).not.toHaveBeenCalled();
-    await adapter.activateTab(scope, "browser:a", signal);
-    await adapter.closeTab(scope, "browser:a", signal);
-    expect(activateTab).toHaveBeenCalledExactlyOnceWith(
-      scope,
-      "browser:a",
-      signal,
-    );
-    expect(closeTab).toHaveBeenCalledExactlyOnceWith(
-      scope,
-      "browser:a",
-      signal,
-    );
-
-    const listener = vi.fn();
-    const unsubscribe = adapter.subscribe(listener);
-    view.webContents.emitDidNavigate("https://example.com/next");
-    expect(listener).toHaveBeenCalledTimes(1);
-    unsubscribe();
-    manager.destroyAll();
-    expect(listener).toHaveBeenCalledTimes(1);
-  });
-});
 
 describe("DesktopBrowserViewManager", () => {
   it("places browser content below the host renderer", () => {
@@ -3865,6 +3343,7 @@ describe("DesktopBrowserViewManager", () => {
     });
     expect(view.webContents.focusCalls).toBe(focusCallsAfterAttach);
   });
+
   it("forwards resolved browser shortcuts and suppresses the untrusted page", () => {
     const dispatchAppCommand = vi.fn();
     const focusHostWebContents = vi.fn();
@@ -4401,7 +3880,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4473,7 +3951,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4510,7 +3987,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4549,7 +4025,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4596,7 +4071,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4633,7 +4107,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4667,7 +4140,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4691,7 +4163,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4826,7 +4297,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4850,7 +4320,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4886,7 +4355,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:a",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
@@ -4926,7 +4394,6 @@ describe("DesktopBrowserViewManager", () => {
       manager.attach({
         hostWindow,
         request: {
-          threadId: "thread-1",
           tabId,
           url: `https://example.com/${tabId}`,
           bounds: { x, y: 0, width: 450, height: 600 },
@@ -4964,7 +4431,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:sibling",
         url: "https://example.com/browser",
         bounds: { x: 450, y: 0, width: 450, height: 600 },
@@ -5008,7 +4474,6 @@ describe("DesktopBrowserViewManager", () => {
       manager.attach({
         hostWindow,
         request: {
-          threadId: "thread-1",
           tabId,
           url: `https://example.com/${tabId}`,
           bounds: { x, y: 0, width: 450, height: 600 },
@@ -5060,7 +4525,6 @@ describe("DesktopBrowserViewManager", () => {
     manager.attach({
       hostWindow: reloadingWindow,
       request: {
-        threadId: "thread-1",
         tabId: "browser:reloading",
         url: "https://example.com/reloading",
         bounds: { x: 100, y: 50, width: 500, height: 350 },

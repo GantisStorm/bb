@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { BbDesktopBrowserTarget } from "@bb/desktop-contract";
 import type { BrowserTabTarget } from "@bb/server-contract";
 import type { BrowserFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import { notifyBrowserControllerDisposed } from "@/lib/browser-control-client";

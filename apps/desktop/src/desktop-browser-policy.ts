@@ -2,6 +2,7 @@ import { isAllowedBrowserNavigationUrl } from "@bb/domain";
 
 export const isAllowedBrowserUrl = isAllowedBrowserNavigationUrl;
 
+
 interface PopupRateDecision {
   allowed: boolean;
   timestamps: number[];

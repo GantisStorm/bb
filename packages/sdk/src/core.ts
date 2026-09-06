@@ -1,7 +1,3 @@
-import {
-  createDesktopBrowsersArea,
-  type ExperimentalDesktopBrowsersArea,
-} from "./areas/desktop-browsers.js";
 import type { BbSdkContext, BbSdkTransport } from "./transport.js";
 import { createBrowserArea, type BrowserArea } from "./areas/browser.js";
 import {
