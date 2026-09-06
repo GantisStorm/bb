@@ -10,6 +10,7 @@ import type { BbDesktopBrowserApi } from "@bb/desktop-contract";
 import type {
   ExperimentalBrowserControllerLifecycle,
   ExperimentalBrowserControllerProps,
+  ExperimentalBrowserSessionImport,
 } from "@get-bb/plugin-sdk";
 import type { BrowserTabTarget, JsonValue } from "@bb/server-contract";
 import {
@@ -107,7 +108,10 @@ function BrowserControllerRuntime({
         try {
           listener(event);
         } catch (error) {
-          console.warn(`[plugin:${slot.pluginId}] Browser lifecycle listener failed`, error);
+          console.warn(
+            `[plugin:${slot.pluginId}] Browser lifecycle listener failed`,
+            error,
+          );
         }
       }
     },
@@ -164,7 +168,9 @@ function BrowserControllerRuntime({
         (current.tabId !== nextTarget.tabId ||
           current.navigationEpoch !== nextTarget.navigationEpoch));
     if (changed) {
-      lifecycleControllerRef.current.abort(new DOMException("navigation", "AbortError"));
+      lifecycleControllerRef.current.abort(
+        new DOMException("navigation", "AbortError"),
+      );
       releaseAll();
       targetRef.current = nextTarget;
       if (!disposedRef.current) {
@@ -184,7 +190,14 @@ function BrowserControllerRuntime({
     targetRef.current = nextTarget;
     setTarget(nextTarget);
     setVisible(props.isVisible);
-  }, [emitLifecycle, releaseAll, props.navigationEpoch, props.isVisible, props.tabId, props.url]);
+  }, [
+    emitLifecycle,
+    releaseAll,
+    props.navigationEpoch,
+    props.isVisible,
+    props.tabId,
+    props.url,
+  ]);
 
   const registerRequestHandler = useCallback(
     (handler: NonNullable<typeof requestHandlerRef.current>) => {
@@ -258,7 +271,6 @@ function BrowserControllerRuntime({
     };
   }, [owner, props.onOverlayLeaseChange]);
 
-
   const ensureRegistered = useCallback(
     (registry: PluginSlotOwnershipRegistry | null) => {
       if (registry === null || registeredRef.current) return;
@@ -276,6 +288,55 @@ function BrowserControllerRuntime({
     };
   }, [ensureRegistered, owner, ownershipRegistry]);
 
+  const sessionImport = useMemo<ExperimentalBrowserSessionImport | null>(() => {
+    const {
+      experimental_listCookieImportSources: list,
+      experimental_importCookies: importCookies,
+      experimental_importCookiesFromBrowser: importFromBrowser,
+      experimental_clearImportedCookies: clear,
+    } = props.desktopBrowser;
+    if (!list || !importCookies || !importFromBrowser || !clear) return null;
+    const assertAvailable = () => {
+      lifecycleController.signal.throwIfAborted();
+      if (
+        disposedRef.current ||
+        target === null ||
+        targetRef.current?.tabId !== target.tabId ||
+        targetRef.current.navigationEpoch !== target.navigationEpoch
+      ) {
+        throw new Error("Browser session import target is no longer available");
+      }
+    };
+    return {
+      async listSources() {
+        assertAvailable();
+        const result = await list({ tabId: props.tabId });
+        assertAvailable();
+        return result;
+      },
+      async importCookies(cookies) {
+        assertAvailable();
+        const result = await importCookies({ tabId: props.tabId, cookies });
+        assertAvailable();
+        return result;
+      },
+      async importFromBrowser(input) {
+        assertAvailable();
+        const result = await importFromBrowser({
+          ...input,
+          tabId: props.tabId,
+        });
+        assertAvailable();
+        return result;
+      },
+      async clear() {
+        assertAvailable();
+        await clear({ tabId: props.tabId });
+        assertAvailable();
+      },
+    };
+  }, [props.desktopBrowser, props.tabId, target, lifecycleController]);
+
   const controllerProps = useMemo<ExperimentalBrowserControllerProps>(
     () => ({
       target,
@@ -284,11 +345,13 @@ function BrowserControllerRuntime({
       projectId: props.projectId,
       url: props.url,
       isVisible: visible,
+      experimental_sessionImport: sessionImport,
       experimental_browserControlAvailable:
         props.desktopBrowser.experimental_browserControlVersion === 2 &&
         props.desktopBrowser.experimental_runBrowserPageScript !== undefined &&
         props.desktopBrowser.experimental_captureBrowserPage !== undefined &&
-        props.desktopBrowser.experimental_readBrowserCaptureChunk !== undefined &&
+        props.desktopBrowser.experimental_readBrowserCaptureChunk !==
+          undefined &&
         props.desktopBrowser.experimental_releaseBrowserCapture !== undefined,
       experimental_lifecycleSignal: lifecycleController.signal,
       experimental_onLifecycle(listener) {
@@ -387,9 +450,14 @@ function BrowserControllerRuntime({
         }
       },
       experimental_setOverlayOpen(open) {
-        if (open && (disposedRef.current || lifecycleController.signal.aborted ||
-          target === null || targetRef.current?.tabId !== target.tabId ||
-          targetRef.current.navigationEpoch !== target.navigationEpoch)) {
+        if (
+          open &&
+          (disposedRef.current ||
+            lifecycleController.signal.aborted ||
+            target === null ||
+            targetRef.current?.tabId !== target.tabId ||
+            targetRef.current.navigationEpoch !== target.navigationEpoch)
+        ) {
           throw new Error("Browser controller is no longer available");
         }
         if (!open && overlayOpenRef.current === false) return;
@@ -415,6 +483,7 @@ function BrowserControllerRuntime({
       props.threadId,
       props.url,
       registerRequestHandler,
+      sessionImport,
       target,
       visible,
     ],

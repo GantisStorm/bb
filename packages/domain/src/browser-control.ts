@@ -532,6 +532,33 @@ const browserClearStorageActionSchema = z
 const browserListCookieImportSourcesActionSchema = z
   .object({ kind: z.literal("list-cookie-import-sources") })
   .strict();
+const browserImportCookiesActionSchema = z
+  .object({
+    kind: z.literal("import-cookies"),
+    cookies: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).max(4096),
+            value: z.string().max(65_536),
+            domain: z.string().min(1).max(4096),
+            path: z.string().min(1).max(4096),
+            secure: z.boolean(),
+            httpOnly: z.boolean(),
+            sameSite: z.enum([
+              "no_restriction",
+              "lax",
+              "strict",
+              "unspecified",
+            ]),
+            expirationDate: z.number().finite().positive().nullable(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(5_000),
+  })
+  .strict();
 const browserImportCookiesFromBrowserActionSchema = z
   .object({
     kind: z.literal("import-cookies-from-browser"),
@@ -630,6 +657,7 @@ export const browserControlActionVariants = {
   "set-storage": browserSetStorageActionSchema,
   "clear-storage": browserClearStorageActionSchema,
   "list-cookie-import-sources": browserListCookieImportSourcesActionSchema,
+  "import-cookies": browserImportCookiesActionSchema,
   "import-cookies-from-browser": browserImportCookiesFromBrowserActionSchema,
   "clear-imported-cookies": browserClearImportedCookiesActionSchema,
   screenshot: browserScreenshotActionSchema,
@@ -1011,6 +1039,7 @@ export const browserAgentControlActionSchema = z.discriminatedUnion("kind", [
   browserControlActionVariants["set-storage"],
   browserControlActionVariants["clear-storage"],
   browserControlActionVariants["list-cookie-import-sources"],
+  browserControlActionVariants["import-cookies"],
   browserControlActionVariants["import-cookies-from-browser"],
   browserControlActionVariants["clear-imported-cookies"],
   browserControlActionVariants["screenshot"],
@@ -1054,6 +1083,7 @@ export const browserControlActionSchema = z.discriminatedUnion("kind", [
   browserControlActionVariants["set-storage"],
   browserControlActionVariants["clear-storage"],
   browserControlActionVariants["list-cookie-import-sources"],
+  browserControlActionVariants["import-cookies"],
   browserControlActionVariants["import-cookies-from-browser"],
   browserControlActionVariants["clear-imported-cookies"],
   browserControlActionVariants["screenshot"],

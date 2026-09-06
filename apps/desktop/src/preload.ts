@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer, webFrame } from "electron";
 import { appCommandIdSchema } from "@bb/domain";
 import {
+  bbDesktopBrowserTargetSchema,
+  bbDesktopBrowserControlStateSchema,
+  bbDesktopBrowserRevealRequestSchema,
+  type BbDesktopBrowserControlState,
+  type BbDesktopBrowserRevealRequest,
   bbDesktopBrowserAutomationResultSchema,
   bbDesktopBrowserClearViewportProfileRequestSchema,
   bbDesktopBrowserCloseRequestSchema,
@@ -65,6 +70,11 @@ import {
   BB_DESKTOP_SET_THEME_CHANNEL,
 } from "./desktop-update-ipc.js";
 import {
+  BB_DESKTOP_BROWSER_TARGET_CHANNEL,
+  BB_DESKTOP_BROWSER_GET_CONTROL_CHANNEL,
+  BB_DESKTOP_BROWSER_CONTROL_CHANNEL,
+  BB_DESKTOP_BROWSER_RELEASE_CONTROL_CHANNEL,
+  BB_DESKTOP_BROWSER_REVEAL_CHANNEL,
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_POINTER_INPUT_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_CANCEL_TRUSTED_INPUT_CHANNEL,
@@ -213,6 +223,12 @@ async function invokeInstallUpdate(): Promise<void> {
 }
 
 const browserStateListeners = new Set<BbDesktopBrowserStateHandler>();
+const browserControlListeners = new Set<
+  (state: BbDesktopBrowserControlState) => void
+>();
+const browserRevealListeners = new Set<
+  (request: BbDesktopBrowserRevealRequest) => void
+>();
 const browserOpenTabListeners = new Set<BbDesktopBrowserOpenTabHandler>();
 const browserScopedOpenTabListeners =
   new Set<BbDesktopBrowserScopedOpenTabHandler>();
@@ -244,6 +260,33 @@ function browserViewBoundsAtWindowScale(
 }
 
 const bbBrowserApi: BbDesktopBrowserApi = {
+  async getTarget() {
+    return bbDesktopBrowserTargetSchema
+      .nullable()
+      .parse(await ipcRenderer.invoke(BB_DESKTOP_BROWSER_TARGET_CHANNEL));
+  },
+  async getControl(tabId) {
+    return bbDesktopBrowserControlStateSchema.nullable().parse(
+      await ipcRenderer.invoke(BB_DESKTOP_BROWSER_GET_CONTROL_CHANNEL, {
+        tabId,
+      }),
+    );
+  },
+  releaseControl(tabId) {
+    ipcRenderer.send(BB_DESKTOP_BROWSER_RELEASE_CONTROL_CHANNEL, { tabId });
+  },
+  onControl(listener) {
+    browserControlListeners.add(listener);
+    return () => {
+      browserControlListeners.delete(listener);
+    };
+  },
+  onReveal(listener) {
+    browserRevealListeners.add(listener);
+    return () => {
+      browserRevealListeners.delete(listener);
+    };
+  },
   attach(request): void {
     ipcRenderer.send(BB_DESKTOP_BROWSER_ATTACH_CHANNEL, {
       ...request,
@@ -716,6 +759,24 @@ ipcRenderer.on(BB_DESKTOP_BROWSER_STATE_CHANNEL, (_event, payload: unknown) => {
     listener(parsed.data);
   }
 });
+
+ipcRenderer.on(
+  BB_DESKTOP_BROWSER_CONTROL_CHANNEL,
+  (_event, payload: unknown) => {
+    const state = bbDesktopBrowserControlStateSchema.safeParse(payload);
+    if (!state.success) return;
+    for (const listener of browserControlListeners) listener(state.data);
+  },
+);
+
+ipcRenderer.on(
+  BB_DESKTOP_BROWSER_REVEAL_CHANNEL,
+  (_event, payload: unknown) => {
+    const request = bbDesktopBrowserRevealRequestSchema.safeParse(payload);
+    if (!request.success) return;
+    for (const listener of browserRevealListeners) listener(request.data);
+  },
+);
 
 ipcRenderer.on(
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,

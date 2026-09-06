@@ -78,7 +78,8 @@ const scriptOperationSchema = z
     frame: browserControlActionVariants.script.shape.frame,
     world: browserControlActionVariants.script.shape.world,
     input: browserControlActionVariants.script.shape.input.default(null),
-    timeoutMs: browserControlActionVariants.script.shape.timeoutMs.default(30_000),
+    timeoutMs:
+      browserControlActionVariants.script.shape.timeoutMs.default(30_000),
   })
   .strict();
 
@@ -106,7 +107,8 @@ const agentScriptOperationSchema = z
     frame: browserControlActionVariants.script.shape.frame,
     world: browserControlActionVariants.script.shape.world,
     input: z.unknown().default(null),
-    timeoutMs: browserControlActionVariants.script.shape.timeoutMs.default(30_000),
+    timeoutMs:
+      browserControlActionVariants.script.shape.timeoutMs.default(30_000),
   })
   .strict();
 
@@ -154,7 +156,6 @@ export type BrowserOperation = z.output<typeof browserOperationSchema>;
 
 type BrowserContext = PluginAgentToolContext | PluginCliContext;
 type BrowserAccess = Pick<BbPluginApi, "experimental_browser">;
-
 
 function browserOperationError(error: unknown): BrowserControlError {
   let body: unknown = undefined;

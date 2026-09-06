@@ -43,6 +43,12 @@ and script-visible cookies. Native profile import uses
 `list-cookie-import-sources` followed by `import-cookies-from-browser`.
 `clear-imported-cookies` requires `confirm: true` and clears the shared managed
 Browser partition. Downloads remain blocked.
+The Browser plugin's Import action also accepts JSON cookie exports. For SDK,
+CLI, and agent parity, `run` accepts `import-cookies` with a `cookies` array of
+normalized `name`, `value`, `domain`, `path`, `secure`, `httpOnly`, `sameSite`,
+and nullable `expirationDate` fields. `sameSite` is `no_restriction`, `lax`,
+`strict`, or `unspecified`; expiry is Unix seconds. Imports affect the shared
+managed Browser partition, not only the selected tab.
 
 `open` and `open-tab` wait for a stable native page target. `activate-tab`
 returns the activated tab's stable target. `close-tab` closes only the selected

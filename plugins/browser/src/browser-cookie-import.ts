@@ -1,16 +1,12 @@
-import type { BbDesktopBrowserCookieImport } from "@bb/desktop-contract";
+import type { ExperimentalBrowserCookieImport } from "@get-bb/plugin-sdk/app";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 
-function requiredString(
-  value: unknown,
-  field: string,
-  index: number,
-): string {
+function requiredString(value: unknown, field: string, index: number): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`Cookie ${index + 1} has no ${field}`);
   }
@@ -28,7 +24,10 @@ function requiredBoolean(
   return value;
 }
 
-function cookieSameSite(value: unknown, index: number): BbDesktopBrowserCookieImport["sameSite"] {
+function cookieSameSite(
+  value: unknown,
+  index: number,
+): ExperimentalBrowserCookieImport["sameSite"] {
   if (value === "no_restriction" || value === "None") return "no_restriction";
   if (value === "lax" || value === "Lax") return "lax";
   if (value === "strict" || value === "Strict") return "strict";
@@ -44,14 +43,20 @@ function cookieExpiry(value: unknown, index: number): number | null {
   throw new Error(`Cookie ${index + 1} has an invalid expirationDate`);
 }
 
-function parseCookie(value: unknown, index: number): BbDesktopBrowserCookieImport {
+function parseCookie(
+  value: unknown,
+  index: number,
+): ExperimentalBrowserCookieImport {
   const cookie = asRecord(value);
   if (cookie === null) throw new Error(`Cookie ${index + 1} is not an object`);
   return {
     name: requiredString(cookie.name, "name", index),
     value: typeof cookie.value === "string" ? cookie.value : "",
     domain: requiredString(cookie.domain, "domain", index),
-    path: typeof cookie.path === "string" && cookie.path.length > 0 ? cookie.path : "/",
+    path:
+      typeof cookie.path === "string" && cookie.path.length > 0
+        ? cookie.path
+        : "/",
     secure: requiredBoolean(cookie.secure, "secure", index),
     httpOnly: requiredBoolean(cookie.httpOnly, "httpOnly", index),
     sameSite: cookieSameSite(cookie.sameSite, index),
@@ -59,7 +64,9 @@ function parseCookie(value: unknown, index: number): BbDesktopBrowserCookieImpor
   };
 }
 
-export function parseBrowserCookieImport(value: unknown): BbDesktopBrowserCookieImport[] {
+export function parseBrowserCookieImport(
+  value: unknown,
+): ExperimentalBrowserCookieImport[] {
   const root = asRecord(value);
   const cookies = Array.isArray(value)
     ? value
@@ -67,7 +74,9 @@ export function parseBrowserCookieImport(value: unknown): BbDesktopBrowserCookie
       ? root.cookies
       : null;
   if (cookies === null || cookies.length === 0) {
-    throw new Error("Choose a JSON cookie export with a non-empty cookies array");
+    throw new Error(
+      "Choose a JSON cookie export with a non-empty cookies array",
+    );
   }
   return cookies.map(parseCookie);
 }

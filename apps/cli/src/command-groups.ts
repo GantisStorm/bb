@@ -31,15 +31,16 @@ export const CORE_COMMAND_GROUPS: readonly CommandGroup[] = [
     (m) => (program, deps) => m.registerBrowserCommands(program, deps.getUrl),
   ),
   group(
+    "desktop-browser",
+    () => import("./commands/desktop-browser.js"),
+    (m) => (program, deps) =>
+      m.registerDesktopBrowserCommands(program, deps.getUrl),
+  ),
+  group(
     "status",
     () => import("./commands/status.js"),
     (m) => (program, deps) =>
       m.registerStatusCommand(program, deps.getUrl, deps.getContext),
-  ),
-  group(
-    "browser",
-    () => import("./commands/browser.js"),
-    (m) => (program, deps) => m.registerBrowserCommands(program, deps.getUrl),
   ),
   group(
     "settings",

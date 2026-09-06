@@ -80,7 +80,6 @@ type AnnotationTargetLike = NonNullable<
   ExperimentalBrowserControllerProps["target"]
 >;
 
-
 type RequestHandlerArgs = {
   input: JsonValue;
   target: AnnotationTargetLike;
@@ -116,7 +115,6 @@ function readOperation(raw: JsonValue): BrowserAnnotationOperation {
   }
   return parsed.data;
 }
-
 
 export function BrowserAnnotationController(
   props: ExperimentalBrowserControllerProps,
@@ -381,8 +379,8 @@ export function BrowserAnnotationController(
         !runtime.isVisible ||
         !runtime.experimental_browserControlAvailable ||
         pickerControllerRef.current !== null ||
-        currentRecord === null ||
-        currentRecord.navigationEpoch !== currentTarget.navigationEpoch ||
+        (currentRecord !== null &&
+          currentRecord.navigationEpoch !== currentTarget.navigationEpoch) ||
         screenshotPreviewUrl !== null ||
         (recordFor()?.elements?.review ?? null) !== null
       ) {
@@ -428,10 +426,11 @@ export function BrowserAnnotationController(
             dataUrl: capture.preview.url,
           });
           if (screenshotPreviewUrl !== null) {
-            screenshot = await propsRef.current.experimental_createImageResource(
-              { blob: await (await fetch(screenshotPreviewUrl)).blob() },
-              { signal: controller.signal },
-            );
+            screenshot =
+              await propsRef.current.experimental_createImageResource(
+                { blob: await (await fetch(screenshotPreviewUrl)).blob() },
+                { signal: controller.signal },
+              );
           }
         } catch (error) {
           if (isExpectedBrowserCancellation(error)) throw error;
@@ -588,9 +587,9 @@ export function BrowserAnnotationController(
       const screenshot =
         screenshotPreviewUrl === null
           ? null
-          : await propsRef.current.experimental_createImageResource(
-              { blob: await (await fetch(screenshotPreviewUrl)).blob() },
-            );
+          : await propsRef.current.experimental_createImageResource({
+              blob: await (await fetch(screenshotPreviewUrl)).blob(),
+            });
       assertCurrent(currentRecord.navigationEpoch);
       const current = recordFor();
       if (current === null || current.elements === null) return;
@@ -822,8 +821,7 @@ export function BrowserAnnotationController(
       currentTarget === null ||
       !runtime.experimental_browserControlAvailable ||
       !runtime.isVisible ||
-      currentRecord === null ||
-      currentRecord.screenshot !== null
+      (currentRecord?.screenshot ?? null) !== null
     ) {
       return;
     }

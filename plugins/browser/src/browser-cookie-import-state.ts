@@ -41,7 +41,6 @@ function parseBrowserCookieImportRecord(
   }
 }
 
-
 function initialize(): void {
   if (initialized || typeof localStorage === "undefined") return;
   initialized = true;

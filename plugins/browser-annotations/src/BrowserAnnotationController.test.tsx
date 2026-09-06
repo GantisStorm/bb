@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExperimentalBrowserControllerLifecycle } from "@get-bb/plugin-sdk/app";
 import { BrowserAnnotationController } from "./BrowserAnnotationController";
@@ -15,6 +22,7 @@ import type {
   BrowserElementAnnotationNote,
 } from "./element-capture";
 import { getAnnotationToolbarController } from "./annotation-toolbar-bridge";
+import { BrowserAnnotationToolbar } from "./BrowserAnnotationToolbar";
 
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   const actual =
@@ -170,6 +178,7 @@ function createProps(
     url: "https://example.test/pricing",
     isVisible: true,
     experimental_browserControlAvailable: true,
+    experimental_sessionImport: null,
     experimental_lifecycleSignal: new AbortController().signal,
     experimental_onLifecycle: (listener) => {
       lifecycleListeners.add(listener);
@@ -207,6 +216,7 @@ function createProps(
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   resetBrowserAnnotationStore();
 });
 
@@ -220,6 +230,105 @@ describe("BrowserAnnotationController request operations", () => {
       signal: new AbortController().signal,
     })) as { notes: unknown[]; screenshot: unknown; review: unknown };
     expect(result).toEqual({ notes: [], screenshot: null, review: null });
+  });
+
+  describe("BrowserAnnotationController toolbar actions", () => {
+    function renderToolbar(
+      props: Parameters<typeof BrowserAnnotationController>[0],
+    ) {
+      render(
+        <>
+          <BrowserAnnotationController {...props} />
+          <BrowserAnnotationToolbar
+            tabId={target.tabId}
+            navigationEpoch={target.navigationEpoch}
+            threadId="thread-1"
+            projectId="project-1"
+            url="https://example.test/pricing"
+          />
+        </>,
+      );
+    }
+
+    it("opens the screenshot editor from an empty annotation record", async () => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          disconnect() {
+            return undefined;
+          }
+          observe() {
+            return undefined;
+          }
+          unobserve() {
+            return undefined;
+          }
+        },
+      );
+      const host = createProps();
+      renderToolbar(host.props);
+
+      await waitFor(() =>
+        expect(getAnnotationToolbarController(target.tabId)).not.toBeNull(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Annotate screenshot" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          browserAnnotationSnapshot({
+            environmentId: null,
+            threadId: "thread-1",
+            tabId: target.tabId,
+          })?.screenshot?.screenshot,
+        ).toEqual(captureDescriptor),
+      );
+    });
+
+    it("starts element capture from an empty annotation record", async () => {
+      const runPageScript = vi.fn(async () => ({
+        navigationEpoch: target.navigationEpoch,
+        value: capture as never,
+      }));
+      const host = createProps({
+        experimental_runBrowserPageScript: runPageScript,
+      });
+      renderToolbar(host.props);
+
+      await waitFor(() =>
+        expect(getAnnotationToolbarController(target.tabId)).not.toBeNull(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Grab page element" }),
+      );
+
+      await waitFor(() => expect(runPageScript).toHaveBeenCalledOnce());
+    });
+
+    it("opens element annotation from an empty annotation record", async () => {
+      const host = createProps();
+      renderToolbar(host.props);
+
+      await waitFor(() =>
+        expect(getAnnotationToolbarController(target.tabId)).not.toBeNull(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Select and annotate page element",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(
+          browserAnnotationSnapshot({
+            environmentId: null,
+            threadId: "thread-1",
+            tabId: target.tabId,
+          })?.elements?.review?.kind,
+        ).toBe("new"),
+      );
+    });
   });
 
   it("adds a note via annotate and reads it back through get", async () => {

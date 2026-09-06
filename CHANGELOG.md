@@ -24,6 +24,7 @@ This release adds Account Pooler for Claude and Codex, push notifications across
 - **Theme Preview.** Install this optional plugin to compare themes across bb screens and components.
 - **Side chat.** Fixes for pending questions, queued messages, and compact layouts.
 - **Browser annotations.** Compact drawers retain drafts and drawings when closed. Screenshot text stays in source-image coordinates across resizing, and the drawing canvas remains aligned with the preview. Native capture downloads release their image resource before completing.
+- **Browser.** Session import now belongs to the Browser plugin, including its wizard and import history; the host exposes only native import capabilities.
 
 ### Agent providers
 
@@ -42,6 +43,7 @@ This release adds Account Pooler for Claude and Codex, push notifications across
 - `bb plugin new` scaffolds a store overview.
 - Use `bb environment branches`; `bb thread show --merge-base-branches` has been removed.
 - `bb browser capture` exports a Browser tab image to a local file through a bounded capture resource, and `bb browser capture-download --descriptor <file> --out <path>` re-exports a saved descriptor; `bb browser plugin` sends an exact-tab contribution command to a plugin's Browser controller.
+- `bb desktop-browser` keeps lease-based desktop/CDP automation separate from revision-targeted `bb browser` actions. The Browser Automation plugin retains both desktop and local-headless workflows; desktop tabs reject simultaneous CDP and Browser controller execution.
 
 ### Performance
 

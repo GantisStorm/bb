@@ -1191,6 +1191,7 @@ function attachBrowserTab(args: AttachBrowserTabArgs): void {
     hostWindow: args.hostWindow,
     request: {
       tabId: args.tabId,
+      threadId: "thread-test",
       url: args.url,
       bounds: { x: 100, y: 50, width: 500, height: 350 },
       visible: true,
@@ -3116,6 +3117,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:hidden",
+        threadId: "thread-test",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -3180,6 +3182,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:hidden-pointer",
+        threadId: "thread-test",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -3226,6 +3229,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:hidden-trusted",
+        threadId: "thread-test",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -3264,6 +3268,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:vis-race",
+        threadId: "thread-test",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -3881,6 +3886,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -3952,6 +3958,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -3988,6 +3995,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -4026,6 +4034,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -4072,6 +4081,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -4108,6 +4118,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -4141,6 +4152,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -4164,6 +4176,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "https://example.com",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -4298,6 +4311,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -4321,6 +4335,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: false,
@@ -4356,6 +4371,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:a",
+        threadId: "thread-test",
         url: "",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,
@@ -4395,6 +4411,7 @@ describe("DesktopBrowserViewManager", () => {
         hostWindow,
         request: {
           tabId,
+          threadId: "thread-test",
           url: `https://example.com/${tabId}`,
           bounds: { x, y: 0, width: 450, height: 600 },
           visible: true,
@@ -4432,6 +4449,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow,
       request: {
         tabId: "browser:sibling",
+        threadId: "thread-test",
         url: "https://example.com/browser",
         bounds: { x: 450, y: 0, width: 450, height: 600 },
         visible: false,
@@ -4475,6 +4493,7 @@ describe("DesktopBrowserViewManager", () => {
         hostWindow,
         request: {
           tabId,
+          threadId: "thread-test",
           url: `https://example.com/${tabId}`,
           bounds: { x, y: 0, width: 450, height: 600 },
           visible: true,
@@ -4526,6 +4545,7 @@ describe("DesktopBrowserViewManager", () => {
       hostWindow: reloadingWindow,
       request: {
         tabId: "browser:reloading",
+        threadId: "thread-test",
         url: "https://example.com/reloading",
         bounds: { x: 100, y: 50, width: 500, height: 350 },
         visible: true,

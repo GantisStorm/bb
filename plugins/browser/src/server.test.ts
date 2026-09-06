@@ -7,8 +7,8 @@ describe("Browser plugin registration", () => {
     const host = createFakePluginHost({ pluginId: "browser" });
 
     expect(() => browserPlugin(host.bb)).not.toThrow();
-    expect(host.harness.registrations.agentTools.map((tool) => tool.name)).toEqual([
-      "bb_browser",
-    ]);
+    expect(
+      host.harness.registrations.agentTools.map((tool) => tool.name),
+    ).toEqual(["bb_browser"]);
   });
 });

@@ -1,10 +1,10 @@
 import { useState } from "react";
-import type { BbDesktopBrowserCookieImportSource } from "@bb/desktop-contract";
+import type { ExperimentalBrowserCookieImportSource } from "@get-bb/plugin-sdk/app";
 import { Button } from "@bb/shared-ui/button";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
-import type { BrowserCookieImportRecord } from "@/lib/browser-cookie-import-state";
+import type { BrowserCookieImportRecord } from "./browser-cookie-import-state";
 
 interface BrowserCookieImportSelection {
   family: string;
@@ -24,7 +24,7 @@ interface BrowserCookieImportWizardProps {
   onClose: () => void;
   onImportFromBrowser: (family: string, profileId: string) => void;
   onImportFromFile: () => void;
-  sources: readonly BbDesktopBrowserCookieImportSource[] | null;
+  sources: readonly ExperimentalBrowserCookieImportSource[] | null;
 }
 
 export function BrowserCookieImportWizard({
@@ -58,7 +58,8 @@ export function BrowserCookieImportWizard({
         <div className="min-w-0">
           <h2 className="text-sm font-medium">Import browser session</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Bring an existing signed-in session into BB Browser across all threads.
+            Bring an existing signed-in session into BB Browser across all
+            threads.
           </p>
         </div>
         <Button

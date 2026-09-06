@@ -38,7 +38,9 @@ it("satisfies the F12 script-safety contract on a real Electron runtime", async 
       );
     }
     const byName = new Map(results.map((row) => [row.name, row.observations]));
-    expect(byName.get("busy times out finite; page and unrelated survive")).toMatchObject({
+    expect(
+      byName.get("busy times out finite; page and unrelated survive"),
+    ).toMatchObject({
       timedOut: true,
       ticksAdvanced: true,
       unrelated: "3",
@@ -58,4 +60,4 @@ it("satisfies the F12 script-safety contract on a real Electron runtime", async 
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
-});
+}, 130_000);

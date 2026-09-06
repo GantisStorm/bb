@@ -71,6 +71,7 @@ async function run() {
       hostWindow,
       request: {
         tabId: "probe",
+        threadId: "thread-test",
         url: `http://127.0.0.1:${address.port}/`,
         visible: false,
         bounds: { x: 0, y: 0, width: 800, height: 600 },

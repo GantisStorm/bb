@@ -104,8 +104,20 @@ function registerTabCommand(args: RegisterDesktopBrowserTabCommandArgs): void {
   });
 }
 
+export type DesktopBrowserIpcManager = Omit<
+  DesktopBrowserViewManager,
+  | "createTab"
+  | "listTabs"
+  | "closeTab"
+  | "captureTab"
+  | "getAutomationTabs"
+  | "subscribeAutomationTabs"
+  | "acquireExternalDebugger"
+  | "releaseExternalDebugger"
+>;
+
 export function registerDesktopBrowserIpc(
-  manager: DesktopBrowserViewManager,
+  manager: DesktopBrowserIpcManager,
 ): void {
   ipcMain.on(BB_DESKTOP_BROWSER_ATTACH_CHANNEL, (event, payload: unknown) => {
     const hostWindow = hostWindowFromBrowserIpcEvent(event);

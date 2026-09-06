@@ -22,14 +22,12 @@ import {
 import { AppToaster } from "@/components/AppToaster";
 import { appToast } from "@/components/ui/app-toast";
 import { BrowserTabContent } from "./BrowserTabContent";
-import { BrowserCookieImportWizard } from "./BrowserCookieImportWizard";
 import { createBrowserViewVisibilityCoordinator } from "./browserViewVisibilityCoordinator";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
   type PluginRegistrationSet,
 } from "@/lib/plugin-slots";
-import { setBrowserCookieImportRecord } from "@/lib/browser-cookie-import-state";
 
 const desktopInfo = {
   lastCheckedAt: null,
@@ -53,18 +51,9 @@ interface BrowserChromeHarness {
   setBounds: Mock;
   setVisible: ReturnType<typeof vi.fn>;
 }
-interface BrowserCookieImportHarness {
-  importCookiesFromBrowser: NonNullable<
-    BbDesktopBrowserApi["experimental_importCookiesFromBrowser"]
-  >;
-  listCookieImportSources: NonNullable<
-    BbDesktopBrowserApi["experimental_listCookieImportSources"]
-  >;
-}
 
 function createBrowserChromeHarness(
   runPageScript?: BbDesktopBrowserApi["experimental_runBrowserPageScript"],
-  cookieImportHarness?: BrowserCookieImportHarness,
   capturePage?: NonNullable<
     BbDesktopBrowserApi["experimental_captureBrowserPage"]
   >,
@@ -101,17 +90,6 @@ function createBrowserChromeHarness(
       ? {
           experimental_browserControlVersion: 2 as const,
           experimental_runBrowserPageScript: runPageScript,
-        }
-      : {}),
-    ...(cookieImportHarness
-      ? {
-          experimental_importCookies: vi
-            .fn()
-            .mockResolvedValue({ importedCookies: 0 }),
-          experimental_importCookiesFromBrowser:
-            cookieImportHarness.importCookiesFromBrowser,
-          experimental_listCookieImportSources:
-            cookieImportHarness.listCookieImportSources,
         }
       : {}),
     ...(capturePage
@@ -246,7 +224,6 @@ describe("BrowserTabContent persistent navigation", () => {
     vi.unstubAllGlobals();
     document.documentElement.style.removeProperty("--ring");
     window.localStorage.clear();
-    setBrowserCookieImportRecord(null);
     resetPluginSlotStoreForTest();
     delete window.bbDesktop;
   });
@@ -501,11 +478,7 @@ describe("BrowserTabContent persistent navigation", () => {
       navigationEpoch: 7,
       pixelSize: { height: 600, width: 800 },
     });
-    const harness = createBrowserChromeHarness(
-      undefined,
-      undefined,
-      capturePage,
-    );
+    const harness = createBrowserChromeHarness(undefined, capturePage);
     renderBrowserChrome(harness, "https://example.com/docs", {
       canHandleBrowserCommands: true,
       canShowNativeBrowserView: true,
@@ -598,144 +571,6 @@ describe("BrowserTabContent persistent navigation", () => {
     },
   );
 
-  it("imports cookies from a detected desktop browser profile", async () => {
-    const listCookieImportSources = vi.fn().mockResolvedValue({
-      sources: [
-        {
-          family: "chrome" as const,
-          label: "Google Chrome",
-          profiles: [{ id: "Default", label: "Default" }],
-        },
-      ],
-    });
-    const importCookiesFromBrowser = vi
-      .fn()
-      .mockResolvedValue({ importedCookies: 2 });
-    const harness = createBrowserChromeHarness(undefined, {
-      importCookiesFromBrowser,
-      listCookieImportSources,
-    });
-    renderBrowserChrome(harness, "https://example.com/docs", {
-      canHandleBrowserCommands: true,
-      canShowNativeBrowserView: true,
-    });
-    act(() => harness.emitState(browserState()));
-    const importButton = await screen.findByRole("button", {
-      name: "Import browser session",
-    });
-    expect(importButton.textContent).toContain("Import");
-    fireEvent.click(importButton);
-    await screen.findByRole("region", { name: "Import browser session" });
-    expect(
-      screen
-        .getByRole("listitem", { name: "Choose source" })
-        .getAttribute("aria-current"),
-    ).toBe("step");
-    await waitFor(() =>
-      expect(harness.setVisible).toHaveBeenLastCalledWith({
-        tabId: "browser:test",
-        visible: false,
-      }),
-    );
-    const importFromChrome = await screen.findByRole("button", {
-      name: /Google Chrome/,
-    });
-    expect(listCookieImportSources).toHaveBeenCalledWith({
-      tabId: "browser:test",
-    });
-
-    fireEvent.click(importFromChrome);
-    expect(
-      screen
-        .getByRole("listitem", { name: "Review import" })
-        .getAttribute("aria-current"),
-    ).toBe("step");
-    await screen.findByText("Review this import");
-    fireEvent.click(screen.getByRole("button", { name: "Import session" }));
-    await waitFor(() =>
-      expect(importCookiesFromBrowser).toHaveBeenCalledWith({
-        family: "chrome",
-        profileId: "Default",
-        tabId: "browser:test",
-      }),
-    );
-    await screen.findByText("Imported 2 cookies from Google Chrome");
-    fireEvent.click(
-      screen.getByRole("button", { name: "Close import wizard" }),
-    );
-    expect(
-      screen.queryByRole("region", { name: "Import browser session" }),
-    ).toBeNull();
-    expect(
-      screen.queryByText("Imported 2 cookies from Google Chrome"),
-    ).toBeNull();
-    await waitFor(() =>
-      expect(harness.setVisible).toHaveBeenLastCalledWith({
-        tabId: "browser:test",
-        visible: true,
-      }),
-    );
-  });
-
-  it("announces cookie import failures with the destructive status treatment", () => {
-    render(
-      <BrowserCookieImportWizard
-        currentImport={null}
-        isClearing={false}
-        isImporting={false}
-        isLoadingSources={false}
-        message="Could not import browser session"
-        messageTone="error"
-        onClose={vi.fn()}
-        onClear={vi.fn()}
-        onImportFromBrowser={vi.fn()}
-        onImportFromFile={vi.fn()}
-        sources={[]}
-      />,
-    );
-
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("Could not import browser session");
-    expect(alert.className).toContain("text-destructive");
-  });
-
-  it("shows the current import and offers clear or overwrite actions", () => {
-    const onClear = vi.fn();
-    const onImportFromBrowser = vi.fn();
-    render(
-      <BrowserCookieImportWizard
-        currentImport={{
-          family: "chrome",
-          importedCookies: 42,
-          kind: "browser",
-          profileId: "Default",
-          profileLabel: "Person 1",
-          sourceLabel: "Google Chrome",
-        }}
-        isClearing={false}
-        isImporting={false}
-        isLoadingSources={false}
-        message={null}
-        messageTone={null}
-        onClear={onClear}
-        onClose={vi.fn()}
-        onImportFromBrowser={onImportFromBrowser}
-        onImportFromFile={vi.fn()}
-        sources={[]}
-      />,
-    );
-
-    const currentImport = screen.getByRole("region", {
-      name: "Currently imported session",
-    });
-    expect(currentImport.textContent).toContain("42 cookies");
-    fireEvent.click(screen.getByRole("button", { name: "Clear import" }));
-    expect(onClear).toHaveBeenCalledOnce();
-
-    fireEvent.click(screen.getByRole("button", { name: "Reimport" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reimport session" }));
-    expect(onImportFromBrowser).toHaveBeenCalledWith("chrome", "Default");
-  });
   it("restores native focus to the logical pane and reports page focus", async () => {
     const harness = createBrowserChromeHarness();
     const onNativeFocus = vi.fn();

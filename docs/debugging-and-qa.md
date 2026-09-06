@@ -66,7 +66,7 @@ profile, without starting a BB core or reading an existing BB store.
 The command prints its artifact directory, including screenshots, protocol
 method traces, and the result summary. Connection credentials are redacted
 from the diagnostic output. Desktop startup now registers the native broker;
-`bb browser` and `bb.sdk.experimental_desktopBrowsers` expose its public API.
+`bb desktop-browser` and `bb.sdk.experimental_desktopBrowsers` expose its public API.
 This fixture also exercises service-created hidden automation tabs and leases.
 The fixture verifies simultaneous control of a hidden thread and another
 thread, in addition to both clients’ main-page workflows. It verifies trusted

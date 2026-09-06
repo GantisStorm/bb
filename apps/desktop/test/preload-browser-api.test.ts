@@ -10,9 +10,7 @@ import type {
   BbDesktopInfo,
   BbDesktopWindowState,
 } from "@bb/desktop-contract";
-import {
-  BB_DESKTOP_INFO_CHANGED_CHANNEL,
-} from "../src/desktop-update-ipc.js";
+import { BB_DESKTOP_INFO_CHANGED_CHANNEL } from "../src/desktop-update-ipc.js";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
@@ -218,7 +216,6 @@ describe("desktop preload browser API", () => {
     api = await loadPreload();
   }, 30_000);
 
-
   it("accepts a bridged wait signal without event listener methods", async () => {
     const waitOptions = {
       signal: { aborted: false },
@@ -245,12 +242,12 @@ describe("desktop preload browser API", () => {
     });
   });
 
-
   it("converts zoomed renderer bounds to native window coordinates", () => {
     electronMock.setZoomFactor(1.25);
 
     api.browser.attach({
       tabId: "browser:zoomed",
+      threadId: "thread-test",
       url: "https://example.com/",
       bounds: { x: 800, y: 40, width: 400, height: 600 },
       visible: false,
@@ -265,6 +262,7 @@ describe("desktop preload browser API", () => {
         channel: BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
         payload: {
           tabId: "browser:zoomed",
+          threadId: "thread-test",
           url: "https://example.com/",
           bounds: { x: 1000, y: 50, width: 500, height: 750 },
           visible: false,

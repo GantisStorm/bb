@@ -138,4 +138,4 @@ plugins; do not add plugin command manuals here.
 
 ## Built-in browser control
 
-Use `bb browser instances --host <host-id> --json` to discover a desktop. Commands `tabs`, `create`, `acquire`, `connection`, `release`, `reveal`, `capture`, `close`, and `watch` require explicit `--host`, `--instance`, `--generation`, and `--thread`. See `bb guide browser` and `bb browser --help` for flags. New tabs use separate automation profiles; personal-tab control needs an explicit handoff. Connection credentials are written with `connection --output <new-file>` and work only on the browser host; keep them out of chat and public port shares.
+Use `bb browser list --json` to discover explicit client, window, tab, and navigation-revision targets. See `bb browser --help`, `bb guide browser`, and the Browser plugin's `bb-browser` skill for operations and session-import behavior.

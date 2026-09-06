@@ -285,7 +285,9 @@ export async function registerBrowserCapture(
       (options.pixelSize.width !== pixelSize.width ||
         options.pixelSize.height !== pixelSize.height)
     ) {
-      throw new Error("Browser image resource pixel size does not match its blob");
+      throw new Error(
+        "Browser image resource pixel size does not match its blob",
+      );
     }
     options.signal?.throwIfAborted();
     if (
@@ -1663,6 +1665,7 @@ function scriptForAction(
     case "set-permissions":
     case "diagnostics":
     case "list-cookie-import-sources":
+    case "import-cookies":
     case "import-cookies-from-browser":
     case "clear-imported-cookies":
     case "activate-tab":
@@ -1687,6 +1690,21 @@ async function executeAction(
 ): Promise<JsonValue> {
   if (tab.desktopBrowser.experimental_browserControlVersion !== 2) {
     throw new Error("Browser control requires a newer BB desktop app");
+  }
+  if (tab.desktopBrowser.getControl !== undefined) {
+    const state = await tab.desktopBrowser.getControl(originalTarget.tabId);
+    signal.throwIfAborted();
+    if (
+      registeredTabs.get(originalTarget.tabId) !== tab ||
+      !targetEquals(targetFor(tab), originalTarget)
+    ) {
+      throw new Error("The Browser target changed before the action");
+    }
+    if (state?.control != null) {
+      throw new Error(
+        "Release the desktop CDP control lease before using Browser actions",
+      );
+    }
   }
   if (action.kind === "activate-tab") {
     const owner = ownerForTab(tab);
@@ -2084,6 +2102,17 @@ async function executeAction(
     }
     return list({ tabId: tab.descriptor.tabId });
   }
+  if (action.kind === "import-cookies") {
+    const importCookies = tab.desktopBrowser.experimental_importCookies;
+    if (importCookies === undefined) {
+      throw new Error("Browser cookie import requires a newer BB desktop app");
+    }
+    signal.throwIfAborted();
+    return importCookies({
+      tabId: tab.descriptor.tabId,
+      cookies: action.cookies,
+    });
+  }
   if (action.kind === "import-cookies-from-browser") {
     const importCookies =
       tab.desktopBrowser.experimental_importCookiesFromBrowser;
@@ -2243,7 +2272,11 @@ async function executeAction(
     if (!transition && !targetEquals(originalTarget, observedTarget)) {
       throw new Error("Browser tab changed while waiting for an event");
     }
-    return normalizeBrowserWaitResult(result.value, originalTarget, observedTarget);
+    return normalizeBrowserWaitResult(
+      result.value,
+      originalTarget,
+      observedTarget,
+    );
   }
   if (action.kind === "navigate") {
     if (!isAllowedBrowserNavigationUrl(action.url)) {
@@ -2306,7 +2339,11 @@ async function executeAction(
     throw new Error("Browser tab changed while the action was running");
   }
   if (action.kind === "wait") {
-    return normalizeBrowserWaitResult(result.value, originalTarget, targetFor(tab));
+    return normalizeBrowserWaitResult(
+      result.value,
+      originalTarget,
+      targetFor(tab),
+    );
   }
   return result.value;
 }

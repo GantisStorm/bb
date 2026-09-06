@@ -34,7 +34,10 @@ import {
   BB_DESKTOP_BROWSER_STOP_CHANNEL,
   BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
 } from "../src/desktop-browser-ipc.js";
-import { registerDesktopBrowserIpc } from "../src/desktop-browser-main-ipc.js";
+import {
+  registerDesktopBrowserIpc,
+  type DesktopBrowserIpcManager,
+} from "../src/desktop-browser-main-ipc.js";
 import type { DesktopBrowserViewManager } from "../src/desktop-browser-view.js";
 
 const electronMock = vi.hoisted(() => {
@@ -155,7 +158,7 @@ interface SendBrowserIpcArgs {
   sender: FakeWebContents;
 }
 
-class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
+class RecordingDesktopBrowserViewManager implements DesktopBrowserIpcManager {
   public readonly attachCalls: AttachCall[] = [];
   public readonly closeCalls: CloseCall[] = [];
   public readonly beginWindowResizeCalls: WindowResizeCall[] = [];
@@ -616,6 +619,7 @@ describe("registerDesktopBrowserIpc", () => {
     const renderer = createTrustedRenderer("main-window");
     const validAttachRequest: BbDesktopBrowserAttachRequest = {
       tabId: "browser:a",
+      threadId: "thread-test",
       url: "",
       bounds: { x: 0, y: 0, width: 800, height: 600 },
       visible: false,

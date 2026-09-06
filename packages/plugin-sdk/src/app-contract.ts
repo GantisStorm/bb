@@ -735,6 +735,41 @@ export type ExperimentalBrowserControllerLifecycle =
         | "plugin-disposed";
     };
 
+/** A normalized cookie for native Browser session import. */
+export interface ExperimentalBrowserCookieImport {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite: "no_restriction" | "lax" | "strict" | "unspecified";
+  expirationDate: number | null;
+}
+
+/** A locally available browser and its importable profiles. */
+export interface ExperimentalBrowserCookieImportSource {
+  family: string;
+  label: string;
+  profiles: { id: string; label: string }[];
+}
+
+/** Native session primitives bound to this controller's exact tab revision.
+ * Cookies affect the shared managed Browser partition across threads.
+ * In-flight native writes cannot be rolled back by cancelling a controller.
+ */
+export interface ExperimentalBrowserSessionImport {
+  listSources(): Promise<{ sources: ExperimentalBrowserCookieImportSource[] }>;
+  importCookies(
+    cookies: ExperimentalBrowserCookieImport[],
+  ): Promise<{ importedCookies: number }>;
+  importFromBrowser(input: {
+    family: string;
+    profileId: string;
+  }): Promise<{ importedCookies: number }>;
+  clear(): Promise<void>;
+}
+
 /** Props passed to an `experimental_browserController` component. */
 export interface ExperimentalBrowserControllerProps {
   target: BrowserTabTarget | null;
@@ -744,6 +779,8 @@ export interface ExperimentalBrowserControllerProps {
   url: string;
   isVisible: boolean;
   experimental_browserControlAvailable: boolean;
+  /** Null when the desktop lacks native session import primitives. */
+  experimental_sessionImport: ExperimentalBrowserSessionImport | null;
   experimental_lifecycleSignal: AbortSignal;
   experimental_onLifecycle(
     listener: (event: ExperimentalBrowserControllerLifecycle) => void,

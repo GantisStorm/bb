@@ -965,6 +965,15 @@ attachment, visibility, geometry, and hit-test check. Keyboard actions require
 an eligible focused target. Waits use typed URL, navigation, load-state, popup,
 request, response, and blocked-download criteria with current-versus-next
 document semantics.
+`experimental_sessionImport` is a nullable native capability on controller props.
+It lists local browser profiles, imports normalized cookies or one selected
+profile, and clears the shared managed Browser cookie partition. The Browser
+plugin owns its wizard, file parsing, and provenance; core only binds native
+primitives to the controller target. Stabilization requires testing unavailable
+desktop versions, target changes during pending operations, shared-partition
+clear semantics, and controller disposal. Native writes already started cannot
+be rolled back by lifecycle cancellation.
+
 
 `ExperimentalBrowserControllerProps` exposes
 `experimental_browserControlAvailable`, `experimental_lifecycleSignal`,
@@ -2426,6 +2435,6 @@ too, after the host has restored the draft. Sole consumer:
 
 ## Desktop browser control
 
-`bb.sdk.experimental_desktopBrowsers` and the exported `ExperimentalDesktopBrowsersArea`, `ExperimentalDesktopBrowserScope`, `ExperimentalDesktopBrowserLease`, `ExperimentalDesktopBrowserCreateInput`, and `ExperimentalDesktopBrowserAcquireInput` expose explicit host/window/thread discovery, isolated tab creation, expiring control leases, scoped CDP connections, capture, reveal, close, release, and disposable tab-state subscriptions. The matching core CLI is `bb browser`.
+`bb.sdk.experimental_desktopBrowsers` and the exported `ExperimentalDesktopBrowsersArea`, `ExperimentalDesktopBrowserScope`, `ExperimentalDesktopBrowserLease`, `ExperimentalDesktopBrowserCreateInput`, and `ExperimentalDesktopBrowserAcquireInput` expose explicit host/window/thread discovery, isolated tab creation, expiring control leases, scoped CDP connections, capture, reveal, close, release, and disposable tab-state subscriptions. The matching core CLI is `bb desktop-browser`. This lease-based interface remains separate from revision-targeted `bb browser` and `bb.sdk.browser` actions; a tab cannot run both controllers simultaneously.
 
 Before stabilization, audit personal-profile handoff policy, per-tab mutual exclusion and child-target scope, native popup handling, debugger detachment, daemon/desktop disconnect and reconnect generations, expiry and cancellation races, bounded screenshot bytes, and cross-platform desktop startup. Connection credentials must remain private to workers on the browser host. `subscribe` polls every two seconds with one outstanding request; it is state observation, not a lossless event log. Cloud browsers and external provider registration are outside this surface.

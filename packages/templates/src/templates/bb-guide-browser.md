@@ -86,8 +86,27 @@ run `list-cookie-import-sources`, then `import-cookies-from-browser` with the
 returned family and profile ID. Clearing imported cookies requires
 `{"kind":"clear-imported-cookies","confirm":true}` and affects the shared
 managed Browser partition.
+The Browser plugin owns the Import button, profile picker, JSON-file parser,
+and import provenance. Native cookie access remains in desktop. SDK and CLI
+callers can import normalized cookie exports through `run` with
+`{"kind":"import-cookies","cookies":[...]}`. Each cookie supplies `name`, `value`,
+`domain`, `path`, `secure`, `httpOnly`, `sameSite` (`no_restriction`, `lax`,
+`strict`, or `unspecified`), and nullable `expirationDate` (Unix seconds).
 
 `open-tab` creates a foreground visible tab in the source tab's panel owner.
 `close-tab` closes only the selected revision. Navigation rejects unsupported
 schemes before dispatch. All actions reject stale revisions rather than
 retargeting another client, window, tab, or page.
+
+Desktop CDP automation is a separate interface: `bb desktop-browser`, backed by
+`bb.sdk.experimental_desktopBrowsers`. Use `instances --host <host-id> --json`
+to discover explicit desktop instance and connection-generation IDs. Its `tabs`,
+`create`, `acquire`, `connection`, `release`, `reveal`, `close`, `capture`, and
+`watch` commands require `--host`, `--instance`, `--generation`, and `--thread`.
+Run `bb desktop-browser <command> --help` for command-specific arguments.
+Automation tabs use isolated profiles; personal-tab control requires an explicit
+`--allow-personal` handoff. Lease-backed CDP control excludes simultaneous
+Browser page-script and input control. Connection credentials are written only
+with `connection --output <new-file>` and work on the browser host; never put
+them in chat or expose the endpoint publicly. The optional Browser Automation
+plugin continues to provide its desktop and local-headless DevBrowser workflows.

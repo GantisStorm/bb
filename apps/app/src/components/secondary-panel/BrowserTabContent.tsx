@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ChangeEvent,
   type FormEvent,
   type PointerEvent,
   type ReactNode,
@@ -17,8 +16,6 @@ import { useSonner } from "sonner";
 import type {
   BbDesktopBrowserApi,
   BbDesktopBrowserControl,
-  BbDesktopBrowserCookieImport,
-  BbDesktopBrowserCookieImportSource,
   BbDesktopBrowserFindInPageRequest,
   BbDesktopBrowserPointerInputEvent,
   BbDesktopBrowserState,
@@ -34,10 +31,8 @@ import {
   COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
   COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
   COARSE_POINTER_TEXT_SM_CLASS,
-  COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { Button } from "@bb/shared-ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { getBbDesktopInfo, getDesktopBrowserApi } from "@/lib/bb-desktop";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -53,7 +48,6 @@ import { useIsBrowserDimmingModalOpen } from "@/hooks/useBrowserDimmingModal";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { BrowserFindBar, type BrowserFindMatches } from "./BrowserFindBar";
 import { BrowserNewTabScreen } from "./BrowserNewTabScreen";
-import { BrowserCookieImportWizard } from "./BrowserCookieImportWizard";
 import {
   registerBrowserView,
   type BrowserViewVisibilityCoordinator,
@@ -70,17 +64,11 @@ import { isLoopbackHostname, isLocalOnlyUrl } from "@/lib/loopback-hostname";
 import { PluginBrowserActions } from "@/components/plugin/PluginBrowserActions";
 import { PluginBrowserControllers } from "@/components/plugin/PluginBrowserControllers";
 import { captureBrowserPagePreview } from "@/lib/browser-capture-assembler";
-import { parseBrowserCookieImport } from "@/lib/browser-cookie-import";
 import {
   browserControlActivitySnapshot,
   registerBrowserControlTab,
   subscribeBrowserControlActivity,
 } from "@/lib/browser-control-client";
-import {
-  browserCookieImportRecordSnapshot,
-  setBrowserCookieImportRecord,
-  subscribeBrowserCookieImportRecord,
-} from "@/lib/browser-cookie-import-state";
 
 interface BrowserTabContentProps {
   tabId: string;
@@ -569,11 +557,6 @@ export function BrowserTabContent({
       unsubscribe?.();
     };
   }, [desktopBrowser, tabId, threadId]);
-  const [cookieImportSources, setCookieImportSources] = useState<
-    readonly BbDesktopBrowserCookieImportSource[] | null
-  >(null);
-  const [isLoadingCookieImportSources, setIsLoadingCookieImportSources] =
-    useState(false);
   const activeAgentRequestCount = useSyncExternalStore(
     subscribeBrowserControlActivity,
     () => browserControlActivitySnapshot(tabId),
@@ -621,23 +604,6 @@ export function BrowserTabContent({
     );
     return () => window.clearTimeout(timeout);
   }, [appToasts.length]);
-  const cookieImportInputRef = useRef<HTMLInputElement | null>(null);
-  const [cookieImportMessage, setCookieImportMessage] = useState<string | null>(
-    null,
-  );
-  const [cookieImportMessageTone, setCookieImportMessageTone] = useState<
-    "error" | "success" | null
-  >(null);
-  const [isImportingCookies, setIsImportingCookies] = useState(false);
-  const [isCookieImportWizardOpen, setIsCookieImportWizardOpen] =
-    useState(false);
-  const [isClearingImportedCookies, setIsClearingImportedCookies] =
-    useState(false);
-  const currentCookieImport = useSyncExternalStore(
-    subscribeBrowserCookieImportRecord,
-    browserCookieImportRecordSnapshot,
-    () => null,
-  );
 
   const onUpdateRef = useRef(onUpdate);
   const recordVisitRef = useRef(recordVisit);
@@ -930,7 +896,6 @@ export function BrowserTabContent({
     !hasPageLoadError &&
     isBrowserViewAttached &&
     !isBrowserDimmingModalOpen &&
-    !isCookieImportWizardOpen &&
     resizeSnapshotUrl === null &&
     pluginOverlayLeases.size === 0;
   const isNativeBrowserViewVisible = isViewVisible && toastSnapshotUrl === null;
@@ -1305,159 +1270,12 @@ export function BrowserTabContent({
     getBbDesktopInfo()?.openExternalUrl(currentUrl);
   }, [currentUrl]);
 
-  const canImportCookies =
-    !isImportingCookies &&
-    !isClearingImportedCookies &&
-    isViewVisible &&
-    desktopBrowser?.experimental_importCookies !== undefined;
-  const handleCookieImport = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.currentTarget.files?.item(0);
-      event.currentTarget.value = "";
-      if (file === null || file === undefined) return;
-      if (desktopBrowser?.experimental_importCookies === undefined) return;
-      setCookieImportMessage(null);
-      setCookieImportMessageTone(null);
-      setIsImportingCookies(true);
-      try {
-        const source: unknown = JSON.parse(await file.text());
-        const cookies: BbDesktopBrowserCookieImport[] =
-          parseBrowserCookieImport(source);
-        setBrowserCookieImportRecord(null);
-        const result = await desktopBrowser.experimental_importCookies({
-          tabId,
-          cookies,
-        });
-        setBrowserCookieImportRecord({
-          fileName: file.name,
-          importedCookies: result.importedCookies,
-          kind: "file",
-        });
-        setCookieImportMessageTone("success");
-        setCookieImportMessage(
-          `Imported ${result.importedCookies} ${result.importedCookies === 1 ? "cookie" : "cookies"}`,
-        );
-      } catch (error) {
-        setCookieImportMessageTone("error");
-        setCookieImportMessage(
-          error instanceof Error ? error.message : "Cookie import failed",
-        );
-      } finally {
-        setIsImportingCookies(false);
-      }
-    },
-    [desktopBrowser, tabId],
-  );
-  const handleOpenCookieImportWizard = useCallback(async () => {
-    setCookieImportMessage(null);
-    setCookieImportMessageTone(null);
-    setCookieImportSources(null);
-    setIsCookieImportWizardOpen(true);
-    if (desktopBrowser?.experimental_listCookieImportSources === undefined) {
-      setCookieImportSources([]);
-      return;
-    }
-    setIsLoadingCookieImportSources(true);
-    try {
-      const result = await desktopBrowser.experimental_listCookieImportSources({
-        tabId,
-      });
-      setCookieImportSources(result.sources);
-    } catch (error) {
-      setCookieImportSources([]);
-      setCookieImportMessageTone("error");
-      setCookieImportMessage(
-        error instanceof Error
-          ? error.message
-          : "Could not find browser profiles",
-      );
-    } finally {
-      setIsLoadingCookieImportSources(false);
-    }
-  }, [desktopBrowser, tabId]);
-  const handleCookieImportFromBrowser = useCallback(
-    async (family: string, profileId: string) => {
-      if (desktopBrowser?.experimental_importCookiesFromBrowser === undefined) {
-        return;
-      }
-      setCookieImportMessage(null);
-      setCookieImportMessageTone(null);
-      setIsImportingCookies(true);
-      try {
-        setBrowserCookieImportRecord(null);
-        const result =
-          await desktopBrowser.experimental_importCookiesFromBrowser({
-            family,
-            profileId,
-            tabId,
-          });
-        setCookieImportMessageTone("success");
-        const source = cookieImportSources?.find(
-          (candidate) => candidate.family === family,
-        );
-        const profile = source?.profiles.find(
-          (candidate) => candidate.id === profileId,
-        );
-        setBrowserCookieImportRecord({
-          family,
-          importedCookies: result.importedCookies,
-          kind: "browser",
-          profileId,
-          profileLabel: profile?.label ?? profileId,
-          sourceLabel: source?.label ?? family,
-        });
-        setCookieImportMessage(
-          `Imported ${result.importedCookies} ${result.importedCookies === 1 ? "cookie" : "cookies"} from ${source?.label ?? family}`,
-        );
-      } catch (error) {
-        setCookieImportMessageTone("error");
-        setCookieImportMessage(
-          error instanceof Error
-            ? error.message
-            : "Browser cookie import failed",
-        );
-      } finally {
-        setIsImportingCookies(false);
-      }
-    },
-    [cookieImportSources, desktopBrowser, tabId],
-  );
-  const handleClearImportedCookies = useCallback(async () => {
-    if (desktopBrowser?.experimental_clearImportedCookies === undefined) return;
-    setCookieImportMessage(null);
-    setCookieImportMessageTone(null);
-    setIsClearingImportedCookies(true);
-    try {
-      await desktopBrowser.experimental_clearImportedCookies({ tabId });
-      setBrowserCookieImportRecord(null);
-      setCookieImportMessageTone("success");
-      setCookieImportMessage("Cleared imported browser session");
-    } catch (error) {
-      setCookieImportMessageTone("error");
-      setCookieImportMessage(
-        error instanceof Error
-          ? error.message
-          : "Could not clear imported browser session",
-      );
-    } finally {
-      setIsClearingImportedCookies(false);
-    }
-  }, [desktopBrowser, tabId]);
   if (desktopBrowser === null) {
     return <BrowserUnavailable />;
   }
 
   return (
     <div data-app-browser className="flex h-full min-h-0 flex-col">
-      <input
-        ref={cookieImportInputRef}
-        type="file"
-        accept="application/json,.json"
-        className="sr-only"
-        onChange={(event) => {
-          void handleCookieImport(event);
-        }}
-      />
       <BrowserChrome
         addressDraft={addressDraft}
         isEditing={isEditing}
@@ -1481,20 +1299,6 @@ export function BrowserTabContent({
         navigationControlsRef={navigationControlsRef}
         pluginActions={
           <>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-label="Import browser session"
-              disabled={!canImportCookies}
-              onClick={() => {
-                void handleOpenCookieImportWizard();
-              }}
-              className={COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS}
-            >
-              <Icon name="File" aria-hidden />
-              Import
-            </Button>
             {activeAgentRequestCount > 0 ? (
               <span
                 role="status"
@@ -1591,25 +1395,6 @@ export function BrowserTabContent({
           onOverlayLeaseChange={handlePluginOverlayLeaseChange}
         />
 
-        {isCookieImportWizardOpen ? (
-          <BrowserCookieImportWizard
-            currentImport={currentCookieImport}
-            isImporting={isImportingCookies}
-            isClearing={isClearingImportedCookies}
-            isLoadingSources={isLoadingCookieImportSources}
-            message={cookieImportMessage}
-            messageTone={cookieImportMessageTone}
-            sources={cookieImportSources}
-            onClose={() => setIsCookieImportWizardOpen(false)}
-            onClear={() => {
-              void handleClearImportedCookies();
-            }}
-            onImportFromBrowser={(family, profileId) => {
-              void handleCookieImportFromBrowser(family, profileId);
-            }}
-            onImportFromFile={() => cookieImportInputRef.current?.click()}
-          />
-        ) : null}
         {toastSnapshotUrl === null ? null : (
           <img
             src={toastSnapshotUrl}
