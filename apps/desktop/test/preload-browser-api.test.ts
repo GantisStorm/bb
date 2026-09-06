@@ -11,44 +11,27 @@ import type {
   BbDesktopWindowState,
 } from "@bb/desktop-contract";
 import {
-  BB_DESKTOP_CHECK_FOR_UPDATES_CHANNEL,
-  BB_DESKTOP_GET_INFO_CHANNEL,
   BB_DESKTOP_INFO_CHANGED_CHANNEL,
-  BB_DESKTOP_INSTALL_UPDATE_CHANNEL,
-  BB_DESKTOP_SET_THEME_CHANNEL,
 } from "../src/desktop-update-ipc.js";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
-  BB_DESKTOP_BROWSER_DETACH_CHANNEL,
-  BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
-  BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_IMPORT_COOKIES_FROM_BROWSER_CHANNEL,
-  BB_DESKTOP_BROWSER_EXPERIMENTAL_CLEAR_IMPORTED_COOKIES_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_LIST_COOKIE_IMPORT_SOURCES_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL,
   BB_DESKTOP_BROWSER_EXPERIMENTAL_WAIT_EVENT_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_RESULT_CHANNEL,
-  BB_DESKTOP_BROWSER_GO_BACK_CHANNEL,
-  BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL,
-  BB_DESKTOP_BROWSER_NAVIGATE_CHANNEL,
   BB_DESKTOP_BROWSER_OPEN_TAB_CHANNEL,
-  BB_DESKTOP_BROWSER_RELOAD_CHANNEL,
   BB_DESKTOP_BROWSER_SCOPED_OPEN_TAB_CHANNEL,
   BB_DESKTOP_BROWSER_SET_BOUNDS_CHANNEL,
-  BB_DESKTOP_BROWSER_SET_VISIBLE_CHANNEL,
-  BB_DESKTOP_BROWSER_SET_VISIBLE_WITHOUT_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_SNAPSHOT_CHANNEL,
   BB_DESKTOP_BROWSER_STATE_CHANNEL,
-  BB_DESKTOP_BROWSER_STOP_CHANNEL,
-  BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
 } from "../src/desktop-browser-ipc.js";
 import {
   BB_DESKTOP_APP_COMMAND_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_REQUEST_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_RESPONSE_CHANNEL,
-  BB_DESKTOP_GET_WINDOW_STATE_CHANNEL,
   BB_DESKTOP_OPEN_NEW_TAB_CHANNEL,
   BB_DESKTOP_OPEN_SERVER_DAEMON_LOGS_CHANNEL,
   BB_DESKTOP_WINDOW_STATE_CHANGED_CHANNEL,
@@ -131,6 +114,10 @@ const electronMock = vi.hoisted(() => {
             requestId: string;
             value: { kind: "load-state"; state: "load" };
           }
+        | {
+            navigationEpoch: number;
+            trustedOrigin: string;
+          }
       > {
         invokeCalls.push(channel);
         if (channel === "bb-desktop:get-window-state") {
@@ -162,6 +149,15 @@ const electronMock = vi.hoisted(() => {
             navigationEpoch: 0,
             requestId: "wait-1",
             value: { kind: "load-state", state: "load" },
+          });
+        }
+        if (
+          channel ===
+          BB_DESKTOP_BROWSER_EXPERIMENTAL_TRUST_LOCALHOST_CERTIFICATE_CHANNEL
+        ) {
+          return Promise.resolve({
+            navigationEpoch: 0,
+            trustedOrigin: "localhost",
           });
         }
         return Promise.resolve(desktopInfo);
@@ -444,6 +440,7 @@ describe("desktop preload browser API", () => {
       value: { kind: "load-state", state: "load" },
     });
   });
+
 
   it("converts zoomed renderer bounds to native window coordinates", () => {
     electronMock.setZoomFactor(1.25);

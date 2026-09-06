@@ -65,10 +65,17 @@ import type {
 import type {
   BrowserBatchRequest,
   BrowserBatchResponse,
+  BrowserCaptureCreateRequest,
+  BrowserCaptureDescriptor,
+  BrowserCaptureReadRequest,
+  BrowserCaptureReadResponse,
+  BrowserCaptureReleaseRequest,
   BrowserControlRequest,
   BrowserControlResponse,
   BrowserOpenRequest,
   BrowserOpenResponse,
+  BrowserPluginContributionRequest,
+  BrowserPluginContributionResponse,
   BrowserTabsResponse,
   CloseTerminalRequest,
   CommandListResponse,
@@ -250,8 +257,12 @@ import type {
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
 import {
   browserBatchRequestSchema,
+  browserCaptureCreateRequestSchema,
+  browserCaptureReadRequestSchema,
+  browserCaptureReleaseRequestSchema,
   browserControlRequestSchema,
   browserOpenRequestSchema,
+  browserPluginContributionRequestSchema,
   closeTerminalRequestSchema,
   copyProjectAttachmentsRequestSchema,
   createFilePreviewRequestSchema,
@@ -832,6 +843,38 @@ export const publicApiRoutes = {
         browserBatchRequestSchema,
       ),
       response: jsonResponse<BrowserBatchResponse>(),
+    }),
+    capture: defineRoute({
+      path: "/browser/capture",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserCaptureReadRequest>(
+        browserCaptureReadRequestSchema,
+      ),
+      response: jsonResponse<BrowserCaptureReadResponse>(),
+    }),
+    captureCreate: defineRoute({
+      path: "/browser/capture-create",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserCaptureCreateRequest>(
+        browserCaptureCreateRequestSchema,
+      ),
+      response: jsonResponse<BrowserCaptureDescriptor>(),
+    }),
+    captureRelease: defineRoute({
+      path: "/browser/capture-release",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserCaptureReleaseRequest>(
+        browserCaptureReleaseRequestSchema,
+      ),
+      response: jsonResponse<{ released: boolean }>(),
+    }),
+    plugin: defineRoute({
+      path: "/browser/plugin",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserPluginContributionRequest>(
+        browserPluginContributionRequestSchema,
+      ),
+      response: jsonResponse<BrowserPluginContributionResponse>(),
     }),
   },
 
