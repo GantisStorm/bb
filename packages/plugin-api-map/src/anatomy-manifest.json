@@ -95,9 +95,7 @@
         },
         {
           "path": "apps/app/src/components/secondary-panel/BrowserTabContent.chrome.test.tsx",
-          "anchors": [
-            "passes Browser actions passive tab identity only"
-          ]
+          "anchors": ["passes Browser actions passive tab identity only"]
         }
       ]
     },
@@ -238,7 +236,7 @@
             "<PluginBrowserControllers",
             "data-browser-plugin-overlay-root=\"\"",
             "onOverlayLeaseChange={handlePluginOverlayLeaseChange}",
-            "isVisible={isNativeBrowserViewVisible}"
+            "isVisible={isBrowserPaneVisible && toastSnapshotUrl === null}"
           ]
         },
         {
@@ -265,7 +263,7 @@
           "path": "plugins/browser-annotations/src/BrowserAnnotationController.tsx",
           "anchors": [
             "data-browser-annotation-controller=\"\"",
-            "className=\"absolute inset-0\"",
+            "className=\"pointer-events-none absolute inset-0\"",
             "<BrowserElementAnnotationTray"
           ]
         },
@@ -273,7 +271,7 @@
           "path": "plugins/browser-annotations/src/BrowserAnnotationReview.tsx",
           "anchors": [
             "aria-label=\"Page annotations\"",
-            "className=\"absolute bottom-3 right-3 z-30",
+            "className=\"pointer-events-auto absolute bottom-3 right-3 z-30",
             "shadow-xl",
             "Add to chat"
           ]

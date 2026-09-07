@@ -86,15 +86,6 @@ type RequestHandlerArgs = {
   signal: AbortSignal;
 };
 
-function json(value: unknown): JsonValue {
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
-
-/**
- * Distinguish expected user cancellation (picker Escape, request/controller
- * abort, navigation-invalidated picker) from real capture failures so the UI
- * can exit quietly without an error toast.
- */
 function isExpectedBrowserCancellation(error: unknown): boolean {
   if (error instanceof DOMException && error.name === "AbortError") {
     return true;
@@ -175,7 +166,6 @@ export function BrowserAnnotationController(
   const notes: readonly BrowserElementAnnotationNote[] = isCurrent()
     ? (recordRef.current?.elements?.notes ?? [])
     : [];
-  const pendingAnnotation = review?.kind === "new" ? review.annotation : null;
   const editingNote =
     review?.kind === "edit"
       ? (notes.find((note) => note.id === review.noteId) ?? null)
@@ -189,10 +179,14 @@ export function BrowserAnnotationController(
   const isPickerActive = pickerMode !== null;
   const isEditorOpen = screenshotPreviewUrl !== null;
   const isReviewOpen = review !== null;
+  const canShowTray =
+    !isPickerActive && !isReviewOpen && !isEditorOpen && notes.length > 0;
+  const isTrayVisible = canShowTray && isTrayOpen;
+  const isCompactTrayOpen = isCompactViewport && isTrayVisible;
   const isSnapshotOverlayOpen =
     !isPickerActive &&
     pageSnapshotPreviewUrl !== null &&
-    (pendingAnnotation !== null || notes.length > 0);
+    (isReviewOpen || isCompactTrayOpen);
 
   const assertCurrent = useCallback(
     (epoch: number): void => {
@@ -250,15 +244,18 @@ export function BrowserAnnotationController(
   const pickElement = useCallback(
     async (args: {
       epoch: number;
-      element?: unknown;
+      element?: Extract<
+        BrowserAnnotationOperation,
+        { operation: "grab" }
+      >["element"];
       frame?: { frameId: string; documentEpoch: number };
       signal: AbortSignal;
       timeoutMs?: number;
     }) => {
-      const input: JsonValue = json({
+      const input: JsonValue = {
         ...(args.element === undefined ? {} : { element: args.element }),
         ...readBrowserElementPickerTheme(),
-      });
+      };
       const value = await runPageScript(
         browserElementPickerSource,
         input,
@@ -280,7 +277,7 @@ export function BrowserAnnotationController(
       if (args.element !== undefined) {
         const metadata = await runPageScript(
           browserElementReactMetadataSource,
-          json({ target: args.element }),
+          { target: args.element },
           args.epoch,
           args.signal,
           {
@@ -1058,8 +1055,7 @@ export function BrowserAnnotationController(
       const operation = readOperation(request.input);
       const epoch = request.target.navigationEpoch;
       const succeed = (value: unknown): JsonValue => {
-        validateBrowserAnnotationOperationResult(operation, value);
-        return json(value);
+        return validateBrowserAnnotationOperationResult(operation, value);
       };
       switch (operation.operation) {
         case "get": {
@@ -1476,10 +1472,11 @@ export function BrowserAnnotationController(
 
   useEffect(() => {
     if (target === null || annotationKey === null) return;
-    markBrowserAnnotationEpoch(annotationKey, target.navigationEpoch);
     const stored = browserAnnotationSnapshot(annotationKey);
+    markBrowserAnnotationEpoch(annotationKey, target.navigationEpoch);
     if (stored !== null && stored.navigationEpoch !== target.navigationEpoch) {
-      clearBrowserAnnotationRecord(annotationKey);
+      pickerControllerRef.current?.abort();
+      pickerControllerRef.current = null;
       setPickerMode(null);
     }
   }, [annotationKey, target]);
@@ -1563,9 +1560,9 @@ export function BrowserAnnotationController(
 
   useEffect(() => {
     const shouldHideNativeView =
-      isEditorOpen || isReviewOpen || isSnapshotOverlayOpen;
+      isEditorOpen || isReviewOpen || isCompactTrayOpen;
     props.experimental_setOverlayOpen(shouldHideNativeView);
-  }, [isEditorOpen, isReviewOpen, isSnapshotOverlayOpen, props]);
+  }, [isEditorOpen, isReviewOpen, isCompactTrayOpen, props]);
 
   useEffect(() => {
     setIsTrayOpen(true);
@@ -1575,11 +1572,11 @@ export function BrowserAnnotationController(
     return null;
   }
 
-  const canShowTray =
-    !isPickerActive && !isReviewOpen && !isEditorOpen && notes.length > 0;
-
   return (
-    <div data-browser-annotation-controller="" className="absolute inset-0">
+    <div
+      data-browser-annotation-controller=""
+      className="pointer-events-none absolute inset-0"
+    >
       {isSnapshotOverlayOpen ? (
         <img
           src={pageSnapshotPreviewUrl!}
@@ -1661,66 +1658,57 @@ export function BrowserAnnotationController(
           />
         ) : null}
       </BrowserAnnotationOverlay>
-      {isCompactViewport && canShowTray && !isTrayOpen ? (
+      {canShowTray && !isTrayOpen ? (
         <button
           type="button"
           onClick={() => setIsTrayOpen(true)}
-          className="absolute bottom-3 right-3 z-30 min-h-11 rounded-md border border-border bg-popover px-3 text-sm text-popover-foreground"
+          className="pointer-events-auto absolute bottom-3 right-3 z-30 min-h-11 rounded-md border border-border bg-popover px-3 text-sm text-popover-foreground"
         >
           Review {notes.length} annotations
         </button>
       ) : null}
       <BrowserAnnotationOverlay
-        open={canShowTray && (!isCompactViewport || isTrayOpen)}
+        open={isTrayVisible}
         onClose={() => setIsTrayOpen(false)}
         label="Page annotations"
         fill={false}
+        modal={false}
       >
         {canShowTray ? (
-          <>
-            {isCompactViewport ? (
-              <button
-                type="button"
-                onClick={() => setIsTrayOpen(false)}
-                className="min-h-11 shrink-0 self-end rounded-md px-3 text-sm text-muted-foreground"
-              >
-                Close annotations
-              </button>
-            ) : null}
-            <BrowserElementAnnotationTray
-              annotations={notes}
-              tabId={target.tabId}
-              onAddToChat={(text) => {
-                if (!composerScopeTargetsThread()) {
-                  toastError(
-                    toast,
-                    "Annotations cannot be added to this composer scope",
-                  );
-                  return;
+          <BrowserElementAnnotationTray
+            annotations={notes}
+            tabId={target.tabId}
+            onClose={() => setIsTrayOpen(false)}
+            onAddToChat={(text) => {
+              if (!composerScopeTargetsThread()) {
+                toastError(
+                  toast,
+                  "Annotations cannot be added to this composer scope",
+                );
+                return;
+              }
+              composerRef.current?.addQuote(text);
+              toastSuccess(toast, "Page annotations added to chat");
+            }}
+            onClear={() => {
+              clearNotes();
+            }}
+            onCopy={(text) => {
+              void copyTextToClipboard(text).then((copied) => {
+                if (copied) {
+                  toastSuccess(toast, "Page annotations copied");
+                } else {
+                  toastError(toast, "Failed to copy page annotations");
                 }
-                composerRef.current?.addQuote(text);
-                toastSuccess(toast, "Page annotations added to chat");
-              }}
-              onClear={() => {
-                clearNotes();
-              }}
-              onCopy={(text) => {
-                void copyTextToClipboard(text).then((copied) => {
-                  if (copied) {
-                    toastSuccess(toast, "Page annotations copied");
-                  } else {
-                    toastError(toast, "Failed to copy page annotations");
-                  }
-                });
-              }}
-              onEdit={(note) => editNote(note)}
-              onRemove={(id) => removeNote(id)}
-              onMove={moveNote}
-              onSelectElement={() => {
-                void startPickerRef.current("annotate");
-              }}
-            />
-          </>
+              });
+            }}
+            onEdit={(note) => editNote(note)}
+            onRemove={(id) => removeNote(id)}
+            onMove={moveNote}
+            onSelectElement={() => {
+              void startPickerRef.current("annotate");
+            }}
+          />
         ) : null}
       </BrowserAnnotationOverlay>
     </div>

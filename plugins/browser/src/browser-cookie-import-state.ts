@@ -42,14 +42,20 @@ function parseBrowserCookieImportRecord(
 }
 
 function initialize(): void {
-  if (initialized || typeof localStorage === "undefined") return;
+  if (initialized || typeof window === "undefined") return;
   initialized = true;
-  currentRecord = parseBrowserCookieImportRecord(
-    localStorage.getItem(STORAGE_KEY),
-  );
+  let storage: Storage;
+  try {
+    storage = window.localStorage;
+    currentRecord = parseBrowserCookieImportRecord(
+      storage.getItem(STORAGE_KEY),
+    );
+  } catch {
+    return;
+  }
   window.addEventListener("storage", (event) => {
     if (
-      event.storageArea !== localStorage ||
+      event.storageArea !== storage ||
       (event.key !== STORAGE_KEY && event.key !== null)
     ) {
       return;
@@ -76,9 +82,11 @@ export function setBrowserCookieImportRecord(
 ): void {
   initialize();
   currentRecord = record;
-  if (typeof localStorage !== "undefined") {
-    if (record === null) localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
-  }
+  try {
+    if (typeof localStorage !== "undefined") {
+      if (record === null) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+    }
+  } catch {}
   for (const listener of listeners) listener();
 }

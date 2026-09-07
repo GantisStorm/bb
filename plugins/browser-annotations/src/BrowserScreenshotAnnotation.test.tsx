@@ -345,8 +345,6 @@ describe("BrowserScreenshotAnnotation", () => {
     });
     fireEvent.pointerUp(canvas, { pointerId: 1 });
     const pen = onEditorStateChange.mock.lastCall?.[0];
-    // The default width is 4 CSS px; at a 0.5 display scale the stored natural
-    // width must be 8 so a later full-size redraw renders 8px (the same CSS 4px).
     expect(pen.shapes[0].width).toBe(8);
 
     fireEvent.click(screen.getByRole("button", { name: "Text" }));
@@ -365,7 +363,6 @@ describe("BrowserScreenshotAnnotation", () => {
       (shape: { kind: string }) => shape.kind === "text",
     );
     expect(textShape.fontSize).toBe(48);
-    // Remount with the snapshot keeps natural geometry (no re-scaling).
     rerender(
       <BrowserScreenshotAnnotation
         screenshotUrl="data:image/png;base64,AA=="

@@ -13,6 +13,8 @@ import type {
   BbDesktopBrowserState,
 } from "@bb/desktop-contract";
 import type { PluginBrowserActionProps } from "@get-bb/plugin-sdk";
+import { useState } from "react";
+import type { ExperimentalBrowserControllerProps } from "@get-bb/plugin-sdk/app";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
@@ -393,6 +395,102 @@ describe("BrowserTabContent persistent navigation", () => {
       expectedNavigationEpoch: 7,
     });
   });
+  it("lets an active controller close its own overlay without enabling hidden panes", async () => {
+    function OverlayController(props: ExperimentalBrowserControllerProps) {
+      const [open, setOpen] = useState(false);
+      return (
+        <button
+          disabled={!props.isVisible}
+          onClick={() => {
+            props.experimental_setOverlayOpen(!open);
+            setOpen(!open);
+          }}
+        >
+          {open ? "Resume live page" : "Open controller panel"}
+        </button>
+      );
+    }
+    setPluginSlotRegistrations("overlay-test", {
+      ...registrationSet([]),
+      browserControllers: [{ id: "overlay", component: OverlayController }],
+    });
+    const harness = createBrowserChromeHarness();
+    const active = renderBrowserChrome(harness, "https://example.com/docs", {
+      canHandleBrowserCommands: true,
+      canShowNativeBrowserView: true,
+    });
+    act(() => harness.emitState(browserState({ navigationEpoch: 7 })));
+    const open = await screen.findByRole("button", {
+      name: "Open controller panel",
+    });
+    await waitFor(() => expect(open).toHaveProperty("disabled", false));
+    fireEvent.click(open);
+    await waitFor(() =>
+      expect(harness.setVisible).toHaveBeenLastCalledWith({
+        tabId: "browser:test",
+        visible: false,
+      }),
+    );
+    const resume = screen.getByRole("button", { name: "Resume live page" });
+    expect(resume).toHaveProperty("disabled", false);
+    fireEvent.click(resume);
+    await waitFor(() =>
+      expect(harness.setVisible).toHaveBeenLastCalledWith({
+        tabId: "browser:test",
+        visible: true,
+      }),
+    );
+    active.unmount();
+    renderBrowserChrome(harness, "https://example.com/docs", {
+      canHandleBrowserCommands: true,
+      canShowNativeBrowserView: false,
+    });
+    act(() => harness.emitState(browserState({ navigationEpoch: 7 })));
+    expect(
+      screen.getByRole("button", {
+        name: "Open controller panel",
+        hidden: true,
+      }),
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("keeps controller UI outside the native aperture without hiding the live page", async () => {
+    function AnnotationList() {
+      const [count, setCount] = useState(1);
+      return (
+        <button onClick={() => setCount(count + 1)}>
+          Annotations: {count}
+        </button>
+      );
+    }
+    setPluginSlotRegistrations("annotation-overlay-test", {
+      ...registrationSet([]),
+      browserControllers: [{ id: "annotations", component: AnnotationList }],
+    });
+    const harness = createBrowserChromeHarness();
+    const view = renderBrowserChrome(harness, "https://example.com/docs", {
+      canHandleBrowserCommands: true,
+      canShowNativeBrowserView: true,
+    });
+    view.container.setAttribute("data-desktop-browser-view-aperture", "");
+    act(() => harness.emitState(browserState({ navigationEpoch: 7 })));
+    const list = await screen.findByRole("button", { name: "Annotations: 1" });
+    expect(list.closest("[data-desktop-browser-view-aperture]")).toBeNull();
+    expect(view.container.contains(list)).toBe(false);
+    await waitFor(() =>
+      expect(harness.setVisible).toHaveBeenLastCalledWith({
+        tabId: "browser:test",
+        visible: true,
+      }),
+    );
+    fireEvent.click(list);
+    expect(
+      screen.getByRole("button", { name: "Annotations: 2" }),
+    ).not.toBeNull();
+    view.unmount();
+    expect(screen.queryByRole("button", { name: "Annotations: 2" })).toBeNull();
+  });
+
   it("hides the native view while another thread is active and restores it on return", async () => {
     const harness = createBrowserChromeHarness();
     const threadA = renderBrowserChrome(harness, "https://example.com/a", {

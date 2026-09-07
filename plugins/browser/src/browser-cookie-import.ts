@@ -49,9 +49,12 @@ function parseCookie(
 ): ExperimentalBrowserCookieImport {
   const cookie = asRecord(value);
   if (cookie === null) throw new Error(`Cookie ${index + 1} is not an object`);
+  if (typeof cookie.value !== "string") {
+    throw new Error(`Cookie ${index + 1} has no string value`);
+  }
   return {
     name: requiredString(cookie.name, "name", index),
-    value: typeof cookie.value === "string" ? cookie.value : "",
+    value: cookie.value,
     domain: requiredString(cookie.domain, "domain", index),
     path:
       typeof cookie.path === "string" && cookie.path.length > 0

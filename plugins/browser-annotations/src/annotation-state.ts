@@ -58,11 +58,8 @@ export interface BrowserElementSession {
 
 export interface BrowserAnnotationRecord {
   elements: BrowserElementSession | null;
-  environmentId: string | null;
   navigationEpoch: number;
   screenshot: BrowserScreenshotSession | null;
-  tabId: string;
-  threadId: string;
 }
 
 const records = new Map<string, BrowserAnnotationRecord>();
@@ -140,7 +137,27 @@ export function markBrowserAnnotationEpoch(
   key: BrowserAnnotationKey,
   navigationEpoch: number,
 ): void {
-  epochs.set(keyOf(key), navigationEpoch);
+  const storeKey = keyOf(key);
+  epochs.set(storeKey, navigationEpoch);
+  const existing = records.get(storeKey);
+  if (existing === undefined || existing.navigationEpoch === navigationEpoch)
+    return;
+  const notes = existing.elements?.notes ?? [];
+  if (notes.length === 0) {
+    records.delete(storeKey);
+  } else {
+    records.set(storeKey, {
+      navigationEpoch,
+      screenshot: null,
+      elements: {
+        notes,
+        pageSnapshot: null,
+        pageSnapshotPreviewUrl: null,
+        review: null,
+      },
+    });
+  }
+  notify();
 }
 
 export function isBrowserAnnotationEpochCurrent(
@@ -162,11 +179,8 @@ export function setBrowserAnnotationScreenshot(
     existing === undefined || existing.navigationEpoch !== navigationEpoch
       ? {
           elements: null,
-          environmentId: key.environmentId,
           navigationEpoch,
           screenshot: session,
-          tabId: key.tabId,
-          threadId: key.threadId,
         }
       : { ...existing, screenshot: session };
   if (next.screenshot === null && next.elements === null) {
@@ -189,11 +203,8 @@ export function setBrowserAnnotationElements(
     existing === undefined || existing.navigationEpoch !== navigationEpoch
       ? {
           elements: session,
-          environmentId: key.environmentId,
           navigationEpoch,
           screenshot: null,
-          tabId: key.tabId,
-          threadId: key.threadId,
         }
       : { ...existing, elements: session };
   if (next.screenshot === null && next.elements === null) {
@@ -207,59 +218,6 @@ export function setBrowserAnnotationElements(
 export function clearBrowserAnnotationRecord(key: BrowserAnnotationKey): void {
   const storeKey = keyOf(key);
   if (records.delete(storeKey)) notify();
-}
-
-export function clearBrowserAnnotationRecordsForTab(tabId: string): void {
-  let changed = false;
-  for (const [storeKey, record] of [...records]) {
-    if (record.tabId === tabId) {
-      records.delete(storeKey);
-      changed = true;
-    }
-  }
-  for (const [storeKey] of [...epochs]) {
-    if (storeKey.slice(storeKey.lastIndexOf("\u0000") + 1) === tabId) {
-      epochs.delete(storeKey);
-      changed = true;
-    }
-  }
-  if (changed) notify();
-}
-
-export function clearBrowserAnnotationRecordsForThread(threadId: string): void {
-  let changed = false;
-  for (const [storeKey, record] of [...records]) {
-    if (record.threadId === threadId) {
-      records.delete(storeKey);
-      changed = true;
-    }
-  }
-  for (const [storeKey] of [...epochs]) {
-    if (storeKey.split("\u0000")[1] === threadId) {
-      epochs.delete(storeKey);
-      changed = true;
-    }
-  }
-  if (changed) notify();
-}
-
-export function clearBrowserAnnotationRecordsForEnvironment(
-  environmentId: string,
-): void {
-  let changed = false;
-  for (const [storeKey, record] of [...records]) {
-    if (record.environmentId === environmentId) {
-      records.delete(storeKey);
-      changed = true;
-    }
-  }
-  for (const [storeKey] of [...epochs]) {
-    if (storeKey.split("\u0000")[0] === environmentId) {
-      epochs.delete(storeKey);
-      changed = true;
-    }
-  }
-  if (changed) notify();
 }
 
 export function resetBrowserAnnotationStore(): void {

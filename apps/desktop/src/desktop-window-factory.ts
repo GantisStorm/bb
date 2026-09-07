@@ -43,6 +43,8 @@ export interface DesktopWindowOpenDevToolsOptions {
 
 export interface DesktopWindowWebContents extends DesktopContextMenuWebContents {
   id: number;
+  isDestroyed(): boolean;
+  once(eventName: "did-finish-load", listener: () => void): void;
   openDevTools(options: DesktopWindowOpenDevToolsOptions): void;
   send(channel: string, payload: unknown): void;
   setWindowOpenHandler(handler: DesktopWindowOpenHandler): void;
@@ -60,7 +62,6 @@ export interface DesktopBrowserWindow extends StatefulBrowserWindow {
     eventName: "close" | "closed" | "enter-full-screen" | "leave-full-screen",
     listener: () => void,
   ): void;
-  once(eventName: "ready-to-show", listener: () => void): void;
   restore(): void;
   setFullScreen(isFullScreen: boolean): void;
   show(): void;
@@ -252,7 +253,7 @@ export function createDesktopWindowFactory(
         browserWindow.setFullScreen(true);
       }
 
-      browserWindow.once("ready-to-show", () => {
+      browserWindow.webContents.once("did-finish-load", () => {
         browserWindow.show();
       });
       browserWindow.on("closed", () => {

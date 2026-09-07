@@ -25,14 +25,16 @@ export async function cropBrowserElementScreenshot(args: {
   const scaleY = image.naturalHeight / args.annotation.viewport.height;
   const sourceX = Math.max(0, Math.floor(args.annotation.rect.x * scaleX));
   const sourceY = Math.max(0, Math.floor(args.annotation.rect.y * scaleY));
-  const sourceWidth = Math.min(
-    image.naturalWidth - sourceX,
-    Math.max(1, Math.ceil(args.annotation.rect.width * scaleX)),
+  const sourceRight = Math.min(
+    image.naturalWidth,
+    Math.ceil((args.annotation.rect.x + args.annotation.rect.width) * scaleX),
   );
-  const sourceHeight = Math.min(
-    image.naturalHeight - sourceY,
-    Math.max(1, Math.ceil(args.annotation.rect.height * scaleY)),
+  const sourceBottom = Math.min(
+    image.naturalHeight,
+    Math.ceil((args.annotation.rect.y + args.annotation.rect.height) * scaleY),
   );
+  const sourceWidth = sourceRight - sourceX;
+  const sourceHeight = sourceBottom - sourceY;
   if (sourceWidth <= 0 || sourceHeight <= 0) return null;
   const scale = Math.min(
     1,

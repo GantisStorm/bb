@@ -12,6 +12,7 @@ import {
   type RefObject,
   type WheelEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useSonner } from "sonner";
 import type {
   BbDesktopBrowserApi,
@@ -582,6 +583,8 @@ export function BrowserTabContent({
   >(() => new Set());
   const [pluginOverlayRoot, setPluginOverlayRoot] =
     useState<HTMLDivElement | null>(null);
+  const [pluginOverlayBounds, setPluginOverlayBounds] =
+    useState<BbDesktopBrowserViewBounds>(EMPTY_BROWSER_VIEW_BOUNDS);
   // Bitmap stand-in pushed by the desktop main process while the native view
   // is hidden during a native window resize; null outside resize bursts.
   const [resizeSnapshotUrl, setResizeSnapshotUrl] = useState<string | null>(
@@ -726,6 +729,7 @@ export function BrowserTabContent({
         return;
       }
       lastSentBoundsRef.current = bounds;
+      setPluginOverlayBounds(bounds);
       desktopBrowser.setBounds({ tabId, bounds });
       updateDesktopBrowserViewAperture({ bounds, tabId });
     },
@@ -762,6 +766,7 @@ export function BrowserTabContent({
   const syncInitialBounds = useCallback(() => {
     const bounds = readBounds();
     lastSentBoundsRef.current = bounds;
+    if (bounds !== null) setPluginOverlayBounds(bounds);
     return bounds ?? EMPTY_BROWSER_VIEW_BOUNDS;
   }, [readBounds]);
 
@@ -888,7 +893,7 @@ export function BrowserTabContent({
     };
   }, [desktopBrowser, syncBoundsIfChanged]);
 
-  const isViewVisible =
+  const isBrowserPaneVisible =
     canShowNativeBrowserView &&
     (canHandleBrowserCommands || supportsNativePaneFocus) &&
     hasPage &&
@@ -896,8 +901,8 @@ export function BrowserTabContent({
     !hasPageLoadError &&
     isBrowserViewAttached &&
     !isBrowserDimmingModalOpen &&
-    resizeSnapshotUrl === null &&
-    pluginOverlayLeases.size === 0;
+    resizeSnapshotUrl === null;
+  const isViewVisible = isBrowserPaneVisible && pluginOverlayLeases.size === 0;
   const isNativeBrowserViewVisible = isViewVisible && toastSnapshotUrl === null;
   const navigationEpoch = state?.navigationEpoch;
   useEffect(() => {
@@ -1376,24 +1381,35 @@ export function BrowserTabContent({
           }}
           onWheel={handleBrowserWheel}
         />
-        <div
-          ref={setPluginOverlayRoot}
-          data-browser-plugin-overlay-root=""
-          className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
-        />
-        <PluginBrowserControllers
-          key={`${tabId}:${threadId}:${projectId ?? ""}`}
-          desktopBrowser={desktopBrowser}
-          environmentId={environmentId}
-          threadId={threadId}
-          projectId={projectId}
-          tabId={tabId}
-          navigationEpoch={state?.navigationEpoch ?? null}
-          url={currentUrl}
-          isVisible={isNativeBrowserViewVisible}
-          overlayRoot={pluginOverlayRoot}
-          onOverlayLeaseChange={handlePluginOverlayLeaseChange}
-        />
+        {createPortal(
+          <div
+            ref={setPluginOverlayRoot}
+            data-browser-plugin-overlay-root=""
+            className="pointer-events-none fixed z-20 overflow-hidden"
+            hidden={!isBrowserPaneVisible}
+            style={{
+              left: pluginOverlayBounds.x,
+              top: pluginOverlayBounds.y,
+              width: pluginOverlayBounds.width,
+              height: pluginOverlayBounds.height,
+            }}
+          >
+            <PluginBrowserControllers
+              key={`${tabId}:${threadId}:${projectId ?? ""}`}
+              desktopBrowser={desktopBrowser}
+              environmentId={environmentId}
+              threadId={threadId}
+              projectId={projectId}
+              tabId={tabId}
+              navigationEpoch={state?.navigationEpoch ?? null}
+              url={currentUrl}
+              isVisible={isBrowserPaneVisible && toastSnapshotUrl === null}
+              overlayRoot={pluginOverlayRoot}
+              onOverlayLeaseChange={handlePluginOverlayLeaseChange}
+            />
+          </div>,
+          document.body,
+        )}
 
         {toastSnapshotUrl === null ? null : (
           <img

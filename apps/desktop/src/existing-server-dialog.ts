@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, type BaseWindow } from "electron";
 import { escapeHtmlText } from "@bb/domain";
 import {
   BB_DESKTOP_EXISTING_SERVER_DIALOG_CHOOSE_CHANNEL,
@@ -10,7 +10,7 @@ type ExistingServerDialogChoice = "connect" | "quit" | "replace";
 
 interface OpenExistingServerDialogArgs {
   details: ForeignRuntimeDetails | null;
-  parentWindow: BrowserWindow | null;
+  parentWindow: BaseWindow | null;
   preloadPath: string;
   serverUrl: string;
 }

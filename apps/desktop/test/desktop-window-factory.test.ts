@@ -68,9 +68,24 @@ class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
   public readonly replacedMisspellings: string[] = [];
   public windowOpenHandler: DesktopWindowOpenHandler | null = null;
   public readonly zoomFactors: number[] = [];
+  private loadListener: (() => void) | null = null;
 
   constructor(id: number) {
     this.id = id;
+  }
+
+  isDestroyed(): boolean {
+    return false;
+  }
+
+  once(_eventName: "did-finish-load", listener: () => void): void {
+    this.loadListener = listener;
+  }
+
+  emitDidFinishLoad(): void {
+    const listener = this.loadListener;
+    this.loadListener = null;
+    listener?.();
   }
 
   openDevTools(options: DesktopWindowOpenDevToolsOptions): void {
@@ -116,7 +131,6 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
   private destroyed = false;
   private readonly bounds: WindowBounds;
   private readonly closedListeners: Array<() => void> = [];
-  private readyToShowListener: (() => void) | null = null;
 
   constructor(args: FakeDesktopWindowArgs) {
     this.options = args.options;
@@ -145,7 +159,7 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
   }
 
   emitReadyToShow(): void {
-    this.readyToShowListener?.();
+    this.webContents.emitDidFinishLoad();
   }
 
   focus(): void {
@@ -190,12 +204,6 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
   ): void {
     if (eventName === "closed") {
       this.closedListeners.push(listener);
-    }
-  }
-
-  once(eventName: "ready-to-show", listener: () => void): void {
-    if (eventName === "ready-to-show") {
-      this.readyToShowListener = listener;
     }
   }
 

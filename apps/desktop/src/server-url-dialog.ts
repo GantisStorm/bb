@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, ipcMain, type BaseWindow } from "electron";
 import { escapeHtmlText } from "@bb/domain";
 import {
   BB_DESKTOP_SERVER_URL_DIALOG_CANCEL_CHANNEL,
@@ -15,7 +15,7 @@ type ServerUrlDialogResult =
 
 interface OpenServerUrlDialogArgs {
   initialUrl: string | null;
-  parentWindow: BrowserWindow | null;
+  parentWindow: BaseWindow | null;
   preloadPath: string;
 }
 

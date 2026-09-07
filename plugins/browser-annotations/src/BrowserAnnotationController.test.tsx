@@ -7,22 +7,26 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExperimentalBrowserControllerLifecycle } from "@get-bb/plugin-sdk/app";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { BrowserAnnotationController } from "./BrowserAnnotationController";
 import {
   browserAnnotationSnapshot,
   createEmptyBrowserScreenshotEditor,
   resetBrowserAnnotationStore,
+  setBrowserAnnotationElements,
   setBrowserAnnotationScreenshot,
 } from "./annotation-state";
-import type {
-  BrowserElementAnnotationCapture,
-  BrowserElementAnnotationNote,
-} from "./element-capture";
+import type { BrowserElementAnnotationCapture } from "./element-capture";
 import { getAnnotationToolbarController } from "./annotation-toolbar-bridge";
-import { BrowserAnnotationToolbar } from "./BrowserAnnotationToolbar";
+import {
+  BrowserAnnotationAnnotateAction,
+  BrowserAnnotationGrabAction,
+  BrowserAnnotationScreenshotAction,
+} from "./BrowserAnnotationToolbar";
 
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   const actual =
@@ -134,28 +138,6 @@ const capture: BrowserElementAnnotationCapture = {
   viewport: { height: 900, width: 1440 },
 };
 
-function note(
-  overrides: Partial<BrowserElementAnnotationNote> = {},
-): BrowserElementAnnotationNote {
-  return {
-    annotation: redactedCapture(),
-    comment: "Move the CTA above the fold.",
-    createdAt: "2026-08-31T00:00:00.000Z",
-    id: "note-1",
-    pageId: "tab-1",
-    intent: "fix",
-    screenshot: null,
-    priority: "important",
-    ...overrides,
-  };
-}
-
-import { redactBrowserElementAnnotation } from "./element-capture";
-
-function redactedCapture() {
-  return redactBrowserElementAnnotation(capture)!;
-}
-
 function createProps(
   overrides: Partial<Parameters<typeof BrowserAnnotationController>[0]> = {},
 ) {
@@ -236,16 +218,19 @@ describe("BrowserAnnotationController request operations", () => {
     function renderToolbar(
       props: Parameters<typeof BrowserAnnotationController>[0],
     ) {
+      const actionProps = {
+        tabId: target.tabId,
+        navigationEpoch: target.navigationEpoch,
+        threadId: "thread-1",
+        projectId: "project-1",
+        url: "https://example.test/pricing",
+      };
       render(
         <>
           <BrowserAnnotationController {...props} />
-          <BrowserAnnotationToolbar
-            tabId={target.tabId}
-            navigationEpoch={target.navigationEpoch}
-            threadId="thread-1"
-            projectId="project-1"
-            url="https://example.test/pricing"
-          />
+          <BrowserAnnotationScreenshotAction {...actionProps} />
+          <BrowserAnnotationGrabAction {...actionProps} />
+          <BrowserAnnotationAnnotateAction {...actionProps} />
         </>,
       );
     }
@@ -306,28 +291,213 @@ describe("BrowserAnnotationController request operations", () => {
       await waitFor(() => expect(runPageScript).toHaveBeenCalledOnce());
     });
 
-    it("opens element annotation from an empty annotation record", async () => {
-      const host = createProps();
-      renderToolbar(host.props);
+    it.each([false, true])(
+      "adds another annotation and manages the list with compact=%s",
+      async (compact) => {
+        vi.stubGlobal(
+          "ResizeObserver",
+          class {
+            disconnect() {}
+            observe() {}
+            unobserve() {}
+          },
+        );
+        const addQuote = vi.fn();
+        await mockComposerScope(
+          { kind: "thread", threadId: "thread-1" },
+          addQuote,
+        );
+        const host = createProps();
+        render(
+          <CompactViewportOverrideProvider isCompactViewport={compact}>
+            <BrowserAnnotationController {...host.props} />
+            <BrowserAnnotationAnnotateAction
+              tabId={target.tabId}
+              navigationEpoch={target.navigationEpoch}
+              threadId="thread-1"
+              projectId="project-1"
+              url={host.props.url}
+            />
+          </CompactViewportOverrideProvider>,
+        );
 
-      await waitFor(() =>
-        expect(getAnnotationToolbarController(target.tabId)).not.toBeNull(),
-      );
-      fireEvent.click(
-        screen.getByRole("button", {
-          name: "Select and annotate page element",
-        }),
-      );
+        await waitFor(() =>
+          expect(getAnnotationToolbarController(target.tabId)).not.toBeNull(),
+        );
+        fireEvent.click(
+          screen.getByRole("button", {
+            name: "Select and annotate page element",
+          }),
+        );
 
-      await waitFor(() =>
+        await screen.findByRole("dialog", { name: "Add page annotation" });
+        fireEvent.change(
+          await screen.findByRole("textbox", { name: "Feedback" }),
+          {
+            target: { value: "First feedback" },
+          },
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Add" }));
+        const tray = await screen.findByRole("complementary", {
+          name: "Page annotations",
+        });
+        expect(host.setOverlayOpen).toHaveBeenLastCalledWith(compact);
+        fireEvent.click(
+          within(tray).getByRole("button", { name: "Add annotation" }),
+        );
+        await screen.findByRole("dialog", { name: "Add page annotation" });
+        fireEvent.change(
+          await screen.findByRole("textbox", { name: "Feedback" }),
+          {
+            target: { value: "Second feedback" },
+          },
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Add" }));
+        const updatedTray = await screen.findByRole("complementary", {
+          name: "Page annotations",
+        });
         expect(
-          browserAnnotationSnapshot({
-            environmentId: null,
-            threadId: "thread-1",
-            tabId: target.tabId,
-          })?.elements?.review?.kind,
-        ).toBe("new"),
+          within(updatedTray)
+            .getAllByRole("listitem")
+            .map((item) => item.textContent),
+        ).toEqual([
+          expect.stringContaining("First feedback"),
+          expect.stringContaining("Second feedback"),
+        ]);
+        fireEvent.click(
+          within(updatedTray).getByRole("button", {
+            name: "Move annotation 2 up",
+          }),
+        );
+        fireEvent.click(
+          within(updatedTray).getByRole("button", { name: "Add to chat" }),
+        );
+        expect(addQuote).toHaveBeenLastCalledWith(
+          expect.stringMatching(/Second feedback[\s\S]*First feedback/),
+        );
+        fireEvent.click(
+          within(updatedTray).getByRole("button", {
+            name: "Remove annotation 1",
+          }),
+        );
+        expect(within(updatedTray).queryByText("Second feedback")).toBeNull();
+        expect(within(updatedTray).getByText("First feedback")).not.toBeNull();
+        fireEvent.click(
+          within(updatedTray).getByRole("button", {
+            name: "Close annotations",
+          }),
+        );
+        expect(host.setOverlayOpen).toHaveBeenLastCalledWith(false);
+        fireEvent.click(
+          screen.getByRole("button", { name: "Review 1 annotations" }),
+        );
+        const reopenedTray = await screen.findByRole("complementary", {
+          name: "Page annotations",
+        });
+        expect(within(reopenedTray).getByText("First feedback")).not.toBeNull();
+        fireEvent.click(
+          within(reopenedTray).getByRole("button", {
+            name: "Clear page annotations",
+          }),
+        );
+        expect(
+          screen.queryByRole("complementary", { name: "Page annotations" }),
+        ).toBeNull();
+        expect(host.setOverlayOpen).toHaveBeenLastCalledWith(false);
+      },
+    );
+  });
+
+  it("combines saved notes across navigation while rejecting old-page writes", async () => {
+    let currentPage = { epoch: target.navigationEpoch, url: capture.url };
+    const host = createProps({
+      experimental_runBrowserPageScript: async () => ({
+        navigationEpoch: currentPage.epoch,
+        value: { ...capture, url: currentPage.url } as never,
+      }),
+    });
+    const view = render(<BrowserAnnotationController {...host.props} />);
+    const call = (input: unknown) =>
+      host.getHandler()!({
+        input,
+        target: { ...target, navigationEpoch: currentPage.epoch },
+        signal: new AbortController().signal,
+      });
+    await act(async () => {
+      await call({
+        operation: "annotate",
+        element: { target: "point", x: 10, y: 20 },
+        intent: "fix",
+        feedback: "Pricing page feedback",
+      });
+    });
+    currentPage = { epoch: 8, url: "https://example.test/next" };
+    view.rerender(
+      <BrowserAnnotationController
+        {...host.props}
+        target={{ ...target, navigationEpoch: currentPage.epoch }}
+        url={currentPage.url}
+      />,
+    );
+    expect(
+      await screen.findByRole("complementary", { name: "Page annotations" }),
+    ).not.toBeNull();
+    expect(host.setOverlayOpen).toHaveBeenLastCalledWith(false);
+    expect(await call({ operation: "get" })).toMatchObject({
+      notes: [
+        {
+          comment: "Pricing page feedback",
+          annotation: { pageUrl: "https://example.test/pricing" },
+        },
+      ],
+      screenshot: null,
+      review: null,
+    });
+    await act(async () => {
+      await call({
+        operation: "annotate",
+        element: { target: "point", x: 10, y: 20 },
+        intent: "change",
+        feedback: "Next page feedback",
+      });
+    });
+    expect(await call({ operation: "get" })).toMatchObject({
+      notes: [
+        {
+          comment: "Pricing page feedback",
+          annotation: { pageUrl: "https://example.test/pricing" },
+        },
+        {
+          comment: "Next page feedback",
+          annotation: { pageUrl: "https://example.test/next" },
+        },
+      ],
+    });
+    expect(await call({ operation: "export", format: "text" })).toMatchObject({
+      text: expect.stringMatching(
+        /https:\/\/example\.test\/pricing[\s\S]*Pricing page feedback[\s\S]*https:\/\/example\.test\/next[\s\S]*Next page feedback/,
+      ),
+    });
+    await act(async () => {
+      setBrowserAnnotationElements(
+        { environmentId: null, threadId: "thread-1", tabId: target.tabId },
+        target.navigationEpoch,
+        null,
       );
+    });
+    expect(await call({ operation: "get" })).toMatchObject({
+      notes: [
+        { comment: "Pricing page feedback" },
+        { comment: "Next page feedback" },
+      ],
+    });
+    await act(async () => {
+      await call({ operation: "clear-notes" });
+    });
+    expect(await call({ operation: "get" })).toEqual({
+      notes: [],
+      screenshot: null,
+      review: null,
     });
   });
 

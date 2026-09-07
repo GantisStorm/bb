@@ -49,6 +49,7 @@ normalized `name`, `value`, `domain`, `path`, `secure`, `httpOnly`, `sameSite`,
 and nullable `expirationDate` fields. `sameSite` is `no_restriction`, `lax`,
 `strict`, or `unspecified`; expiry is Unix seconds. Imports affect the shared
 managed Browser partition, not only the selected tab.
+Closing the Import dialog preserves the imported session. An import or clear already in progress can finish after the dialog closes; closing is not a cancellation command. Reopening the dialog does not restart the operation.
 
 `open` and `open-tab` wait for a stable native page target. `activate-tab`
 returns the activated tab's stable target. `close-tab` closes only the selected

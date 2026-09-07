@@ -206,30 +206,9 @@ export function annotatedScreenshotBlob(
   if (context === null) return Promise.resolve(null);
   context.drawImage(image, 0, 0, output.width, output.height);
   for (const shape of shapes) {
-    const scaled = scaleShape(shape, 1);
-    drawShape(context, scaled);
+    drawShape(context, shape);
   }
   return new Promise((resolve) => output.toBlob(resolve, "image/png"));
-}
-
-export function annotatedScreenshotDataUrl(
-  image: HTMLImageElement,
-  shapes: readonly Shape[],
-): string | null {
-  if (image.naturalWidth === 0 || image.naturalHeight === 0) {
-    return null;
-  }
-  const output = document.createElement("canvas");
-  output.width = image.naturalWidth;
-  output.height = image.naturalHeight;
-  const context = output.getContext("2d");
-  if (context === null) return null;
-  context.drawImage(image, 0, 0, output.width, output.height);
-  for (const shape of shapes) {
-    const scaled = scaleShape(shape, 1);
-    drawShape(context, scaled);
-  }
-  return output.toDataURL("image/png");
 }
 
 export function loadScreenshotImage(

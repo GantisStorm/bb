@@ -19,6 +19,7 @@ interface BrowserCookieImportWizardProps {
   isImporting: boolean;
   isLoadingSources: boolean;
   message: string | null;
+  sourceError: string | null;
   messageTone: "error" | "success" | null;
   onClear: () => void;
   onClose: () => void;
@@ -33,6 +34,7 @@ export function BrowserCookieImportWizard({
   isImporting,
   isLoadingSources,
   message,
+  sourceError,
   messageTone,
   onClear,
   onClose,
@@ -67,7 +69,6 @@ export function BrowserCookieImportWizard({
           variant="ghost"
           size="icon"
           aria-label="Close import wizard"
-          disabled={isBusy}
           onClick={onClose}
           className={cn(
             COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
@@ -187,7 +188,7 @@ export function BrowserCookieImportWizard({
                       size="sm"
                       disabled={isBusy}
                       onClick={onClear}
-                      className="text-destructive hover:text-destructive"
+                      className="text-destructive-text hover:bg-destructive/10 hover:text-destructive-text"
                     >
                       {isClearing ? "Clearing…" : "Clear import"}
                     </Button>
@@ -205,7 +206,15 @@ export function BrowserCookieImportWizard({
                     />
                     Finding browser profiles…
                   </div>
-                ) : sources === null || sources.length === 0 ? (
+                ) : sourceError !== null ? (
+                  <div
+                    role="alert"
+                    className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-4 text-sm text-destructive-text"
+                  >
+                    {sourceError}
+                  </div>
+                ) : sources === null ||
+                  sources.every((source) => source.profiles.length === 0) ? (
                   <div className="rounded-xl border border-dashed border-border px-4 py-5">
                     <p className="text-sm font-medium">
                       No local profiles found
@@ -363,9 +372,12 @@ export function BrowserCookieImportWizard({
               role={messageTone === "error" ? "alert" : "status"}
               aria-live="polite"
               className={cn(
-                "rounded-xl border border-border bg-state-hover px-4 py-3 text-sm",
+                "rounded-xl border border-border px-4 py-3 text-sm",
                 messageTone === "error"
-                  ? "text-destructive"
+                  ? "bg-destructive/10"
+                  : "bg-state-hover",
+                messageTone === "error"
+                  ? "text-destructive-text"
                   : messageTone === "success"
                     ? "text-foreground"
                     : "text-muted-foreground",

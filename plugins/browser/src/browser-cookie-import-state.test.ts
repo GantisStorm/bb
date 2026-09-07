@@ -7,6 +7,7 @@ import {
 } from "./browser-cookie-import-state.js";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   setBrowserCookieImportRecord(null);
   window.localStorage.clear();
 });
@@ -55,5 +56,30 @@ describe("browser cookie import state", () => {
     );
 
     expect(browserCookieImportRecordSnapshot()).toBeNull();
+  });
+
+  it("updates subscribers even when import-history persistence is unavailable", () => {
+    const updates: Array<string | null> = [];
+    const unsubscribe = subscribeBrowserCookieImportRecord(() => {
+      const record = browserCookieImportRecordSnapshot();
+      updates.push(record?.kind === "file" ? record.fileName : null);
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage full", "QuotaExceededError");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("Storage unavailable", "SecurityError");
+    });
+    try {
+      setBrowserCookieImportRecord({
+        kind: "file",
+        fileName: "cookies.json",
+        importedCookies: 2,
+      });
+      setBrowserCookieImportRecord(null);
+      expect(updates).toEqual(["cookies.json", null]);
+    } finally {
+      unsubscribe();
+    }
   });
 });

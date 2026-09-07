@@ -35,12 +35,14 @@ export function BrowserAnnotationOverlay({
   onClose,
   label,
   fill,
+  modal = true,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   label: string;
   fill: boolean;
+  modal?: boolean;
   children: ReactNode;
 }) {
   const handleOpenChange = useCallback(
@@ -64,7 +66,7 @@ export function BrowserAnnotationOverlay({
     [onOpenChange],
   );
   usePersistentOverlayFocus({
-    open: open && !isCompactViewport,
+    open: open && !isCompactViewport && modal,
     panelRef: desktopOverlayRef,
     requestClose: requestDesktopClose,
   });
@@ -76,11 +78,20 @@ export function BrowserAnnotationOverlay({
     return open ? (
       <div
         ref={desktopOverlayRef}
-        role="dialog"
-        aria-label={label}
-        aria-modal="true"
-        tabIndex={-1}
-        className="absolute inset-0 z-30 outline-none"
+        role={modal ? "dialog" : undefined}
+        aria-label={modal ? label : undefined}
+        aria-modal={modal ? true : undefined}
+        tabIndex={modal ? -1 : undefined}
+        className={cn(
+          "absolute inset-0 z-30 outline-none",
+          modal ? "pointer-events-auto" : "pointer-events-none",
+        )}
+        onKeyDown={(event) => {
+          if (!modal && event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+        }}
       >
         {children}
       </div>
@@ -94,7 +105,7 @@ export function BrowserAnnotationOverlay({
       contentClassName={cn("overflow-hidden", fill && "h-[90dvh]")}
     >
       {isContentRealized ? (
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-auto [&>aside]:static [&>aside]:w-full [&>section]:relative [&>section]:flex-1 [&_button]:min-h-9 [&_button]:min-w-9 [&_textarea]:text-base">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-auto [&>aside]:static [&>aside]:max-h-none [&>aside]:w-full [&>aside]:shrink-0 [&>aside]:overflow-visible [&>section]:relative [&>section]:flex-1 [&_button]:min-h-9 [&_button]:min-w-9 [&_textarea]:text-base">
           {children == null || children === false
             ? retainedContent.current
             : children}
@@ -119,22 +130,41 @@ export function BrowserElementAnnotationReview({
   onClose,
 }: BrowserElementAnnotationReviewProps) {
   const canSubmit = comment.trim().length > 0;
-  const cardWidth = 352;
-  const inset = 12;
-  const targetCenterX = annotation.rect.x + annotation.rect.width / 2;
-  const left = Math.min(
-    Math.max(inset, targetCenterX - cardWidth / 2),
-    Math.max(inset, annotation.viewport.width - cardWidth - inset),
-  );
-  const belowTop = annotation.rect.y + annotation.rect.height + 10;
-  const top =
-    belowTop + 400 <= annotation.viewport.height - inset
-      ? belowTop
-      : Math.max(inset, annotation.rect.y - 410);
+  const reviewRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const panel = reviewRef.current;
+    const container = panel?.parentElement;
+    if (panel === null || container === null || container === undefined) return;
+    const updatePosition = () => {
+      const inset = 12;
+      const width = panel.offsetWidth;
+      const height = panel.offsetHeight;
+      const availableWidth = container.clientWidth;
+      const availableHeight = container.clientHeight;
+      const targetCenterX = annotation.rect.x + annotation.rect.width / 2;
+      const belowTop = annotation.rect.y + annotation.rect.height + 10;
+      const top =
+        belowTop + height <= availableHeight - inset
+          ? belowTop
+          : annotation.rect.y - height - 10;
+      panel.style.left = `${Math.max(inset, Math.min(targetCenterX - width / 2, availableWidth - width - inset))}px`;
+      panel.style.top = `${Math.max(inset, Math.min(top, availableHeight - height - inset))}px`;
+    };
+    updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    observer.observe(container);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [
+    annotation.rect.x,
+    annotation.rect.y,
+    annotation.rect.width,
+    annotation.rect.height,
+  ]);
   return (
     <aside
-      style={{ left, top }}
-      className="absolute z-30 max-h-[min(25rem,calc(100dvh-1.5rem))] w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto"
+      ref={reviewRef}
+      className="absolute left-3 top-3 z-30 max-h-[calc(100%-1.5rem)] w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -160,7 +190,7 @@ export function BrowserElementAnnotationReview({
             role="alert"
             className="mb-3 flex items-start justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2"
           >
-            <p className="min-w-0 text-xs text-destructive">
+            <p className="min-w-0 text-xs text-destructive-text">
               <span className="font-medium">Preview unavailable.</span>{" "}
               {captureError}
             </p>
@@ -266,6 +296,7 @@ export function BrowserElementAnnotationTray({
   annotations,
   onAddToChat,
   onClear,
+  onClose,
   onCopy,
   onEdit,
   onRemove,
@@ -276,6 +307,7 @@ export function BrowserElementAnnotationTray({
   annotations: readonly BrowserElementAnnotationNote[];
   onAddToChat?: (text: string) => void;
   onClear: () => void;
+  onClose: () => void;
   onCopy: (text: string) => void;
   onEdit: (note: BrowserElementAnnotationNote) => void;
   onRemove: (noteId: string) => void;
@@ -287,7 +319,7 @@ export function BrowserElementAnnotationTray({
   return (
     <aside
       aria-label="Page annotations"
-      className="absolute bottom-3 right-3 z-30 flex max-h-[55%] w-[min(24rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-xl bg-popover/95 text-popover-foreground shadow-xl backdrop-blur"
+      className="pointer-events-auto absolute bottom-3 right-3 z-30 flex max-h-[55%] w-[min(24rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-xl bg-popover/95 text-popover-foreground shadow-xl backdrop-blur"
     >
       <header className="border-b border-border px-4 py-3">
         <div className="flex items-center gap-3">
@@ -310,6 +342,14 @@ export function BrowserElementAnnotationTray({
             className="inline-flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <Icon name="Clean" className="size-3.5" aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label="Close annotations"
+            onClick={onClose}
+            className="inline-flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <Icon name="X" className="size-3.5" aria-hidden />
           </button>
         </div>
       </header>
@@ -334,6 +374,12 @@ export function BrowserElementAnnotationTray({
                     {note.intent}
                   </span>
                 </div>
+                <p
+                  className="mt-1 truncate text-xs text-muted-foreground"
+                  title={note.annotation.pageUrl}
+                >
+                  {note.annotation.pageUrl}
+                </p>
                 <code className="mt-1 block truncate text-xs text-muted-foreground">
                   {note.annotation.dom.selector}
                 </code>
@@ -410,7 +456,7 @@ export function BrowserElementAnnotationTray({
               if (agentText === null) return;
               onAddToChat(agentText);
             }}
-          className="inline-flex h-11 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+            className="inline-flex h-11 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
           >
             <Icon name="Sent" className="size-3.5" aria-hidden />
             Add to chat

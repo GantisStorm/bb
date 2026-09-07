@@ -1,9 +1,8 @@
+import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import {
-  BrowserWindow,
-  ipcMain,
-  type IpcMainEvent,
-  type IpcMainInvokeEvent,
-} from "electron";
+  desktopHostWindowForWebContents,
+  type DesktopHostWindow,
+} from "./desktop-application-window.js";
 import {
   bbDesktopBrowserAttachRequestSchema,
   bbDesktopBrowserAutomationRequestSchema,
@@ -73,7 +72,7 @@ import {
 import type { DesktopBrowserViewManager } from "./desktop-browser-view.js";
 
 interface DesktopBrowserTabCommandArgs {
-  hostWindow: BrowserWindow;
+  hostWindow: DesktopHostWindow;
   tabId: string;
 }
 
@@ -86,8 +85,8 @@ interface RegisterDesktopBrowserTabCommandArgs {
 
 function hostWindowFromBrowserIpcEvent(
   event: IpcMainEvent | IpcMainInvokeEvent,
-): BrowserWindow | null {
-  return BrowserWindow.fromWebContents(event.sender);
+): DesktopHostWindow | null {
+  return desktopHostWindowForWebContents(event.sender);
 }
 
 function registerTabCommand(args: RegisterDesktopBrowserTabCommandArgs): void {

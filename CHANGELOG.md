@@ -23,8 +23,13 @@ This release adds Account Pooler for Claude and Codex, push notifications across
 - **Provider Usage.** Enable this new plugin to see limits and reset times across machines in the sidebar footer.
 - **Theme Preview.** Install this optional plugin to compare themes across bb screens and components.
 - **Side chat.** Fixes for pending questions, queued messages, and compact layouts.
-- **Browser annotations.** Compact drawers retain drafts and drawings when closed. Screenshot text stays in source-image coordinates across resizing, and the drawing canvas remains aligned with the preview. Native capture downloads release their image resource before completing.
+- **Browser annotations.** Review cards grow to fit their content and stay within the Browser pane; compact drawers avoid nested scrolling. Compact drawers retain drafts and drawings when closed. Screenshot text stays in source-image coordinates across resizing, and the drawing canvas remains aligned with the preview. Native capture downloads release their image resource before completing.
 - **Browser.** Session import now belongs to the Browser plugin, including its wizard and import history; the host exposes only native import capabilities.
+- Browser annotation crops now exclude offscreen portions instead of capturing neighboring pixels. Picker highlights follow host theme colors, and annotation/session-import errors—including the clear-import hover state—use readable destructive text and backgrounds.
+- Saving a page annotation no longer blocks the live Browser behind the desktop annotation list. Browser controller overlays render outside the native viewport mask so the list stays visible and follows its pane. The list can be closed and reopened without losing notes, and Add annotation works again from both desktop lists and compact drawers.
+- Desktop application windows now use an explicit app-renderer layer above native Browser views, so plugin annotation panels are not covered by native page content. Window lookup, reload, close handling, and dialog parenting use the composed application window.
+- Saved Browser annotations survive navigation within a tab. Each note retains its source URL, and combined text exports preserve cross-page feedback in the chosen order. Navigation discards page-specific capture/review state without deleting saved notes.
+- The desktop session-import dialog accepts pointer input, including its close button. Closing or reopening it no longer loses pending import/clear results or leaves the controls busy. Profile-discovery errors stay separate from import results, empty profile families show the fallback state, malformed cookie values are rejected, and unavailable history storage does not turn a successful native import into a failure.
 
 ### Agent providers
 

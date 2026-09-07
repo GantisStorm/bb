@@ -8,15 +8,10 @@ export function readBrowserElementPickerTheme(): BrowserElementPickerTheme {
   const outlineColor =
     styles.getPropertyValue("--ring").trim() ||
     styles.getPropertyValue("--foreground").trim() ||
-    "#3b82f6";
+    styles.getPropertyValue("--ink").trim() ||
+    styles.color;
   return {
     fillColor: `color-mix(in oklab, ${outlineColor} 14%, transparent)`,
     outlineColor,
   };
 }
-
-export const FALLBACK_BROWSER_ELEMENT_PICKER_THEME: BrowserElementPickerTheme =
-  {
-    fillColor: "color-mix(in oklab, #3b82f6 14%, transparent)",
-    outlineColor: "#3b82f6",
-  };

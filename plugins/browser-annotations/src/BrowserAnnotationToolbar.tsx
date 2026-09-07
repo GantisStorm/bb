@@ -167,20 +167,6 @@ export function BrowserAnnotationAnnotateAction(
   return <BrowserAnnotationToolbarAction {...props} action="annotate" />;
 }
 
-export function BrowserAnnotationToolbar(props: PluginBrowserActionProps) {
-  return (
-    <div
-      role="group"
-      aria-label="Page annotations"
-      className="flex shrink-0 items-center"
-    >
-      <BrowserAnnotationScreenshotAction {...props} />
-      <BrowserAnnotationGrabAction {...props} />
-      <BrowserAnnotationAnnotateAction {...props} />
-    </div>
-  );
-}
-
 function ToolbarButton({
   button,
   disabled,

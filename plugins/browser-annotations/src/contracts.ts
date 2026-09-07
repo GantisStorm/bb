@@ -53,11 +53,6 @@ export const browserAnnotationTimeoutMsSchema = z
   .min(100)
   .max(120_000);
 
-
-// ---------------------------------------------------------------------------
-// Canonical element annotation (redacted element-types shape).
-// ---------------------------------------------------------------------------
-
 const boundedText = (max: number) => z.string().max(max);
 const nullableBoundedText = (max: number) => boundedText(max).nullable();
 const annotationRectSchema = z
@@ -256,7 +251,6 @@ export type BrowserScreenshotShape = z.infer<
   typeof browserScreenshotShapeSchema
 >;
 
-/** The editor snapshot schema with every shape fully validated. */
 export const browserScreenshotEditorStateSchema = z
   .object({
     image:
@@ -389,10 +383,6 @@ export const browserElementSessionSchema = z
   .strict();
 export type BrowserElementSession = z.infer<typeof browserElementSessionSchema>;
 
-// ---------------------------------------------------------------------------
-// Operation request wire schema.
-// ---------------------------------------------------------------------------
-
 export const browserAnnotationOperationSchema = z.discriminatedUnion(
   "operation",
   [
@@ -485,11 +475,6 @@ export type BrowserAnnotationOperation = z.infer<
   typeof browserAnnotationOperationSchema
 >;
 
-/**
- * Strict shared request the agent tool/CLI send: canonical exact-tab target,
- * validated operation, and an explicit broker timeout that is rejected (never
- * silently clamped) when it falls outside 100–120000 ms.
- */
 export const browserAnnotationRequestSchema = z
   .object({
     target: experimental_browserTabTargetSchema,
@@ -652,10 +637,7 @@ function resultSchemaForOperation(operation: BrowserAnnotationOperation) {
 
 export function validateBrowserAnnotationOperationResult<
   T extends BrowserAnnotationOperation,
->(
-  operation: T,
-  value: unknown,
-): BrowserAnnotationOperationValue<T> {
+>(operation: T, value: unknown): BrowserAnnotationOperationValue<T> {
   const valueParsed = resultSchemaForOperation(operation).safeParse(value);
   if (!valueParsed.success) {
     throw new Error(

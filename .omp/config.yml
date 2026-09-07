@@ -1,0 +1,14 @@
+# Project-local OMP settings for this repository.
+# This file layers over ~/.omp/agent/config.yml only when the process cwd is this repo root.
+# `omp config set` and `/settings` write the global file, not this project layer.
+# Array-valued settings are omitted intentionally so cycleOrder, disabledProviders, and
+# enabledModels remain inherited instead of replacing the global arrays wholesale.
+
+modelRoles:
+  default: openai-codex/gpt-5.6-terra:medium
+  slow: openai-codex/gpt-5.6-sol:medium
+  plan: openai-codex/gpt-5.6-sol:high
+  task: command-code/deepseek/deepseek-v4-flash:high
+  vision: openai-codex/gpt-5.6-sol:medium
+  smol: command-code/deepseek/deepseek-v4-flash:high
+  tiny: command-code/deepseek/deepseek-v4-flash:low

@@ -36,16 +36,18 @@ function DrawerHarness() {
   );
 }
 
-function DesktopOverlayHarness() {
+function DesktopOverlayHarness({ modal = true }: { modal?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <CompactViewportOverrideProvider isCompactViewport={false}>
       <button onClick={() => setOpen(true)}>Open desktop dialog</button>
+      <button>Page control</button>
       <BrowserAnnotationOverlay
         open={open}
         onClose={() => setOpen(false)}
         label="Desktop annotation"
         fill={false}
+        modal={modal}
       >
         {open && (
           <div>
@@ -127,4 +129,18 @@ it("contains desktop annotation focus and restores its trigger on close", () => 
 
   fireEvent.click(screen.getByRole("button", { name: "Close desktop dialog" }));
   expect(document.activeElement).toBe(trigger);
+});
+
+it("does not steal page focus or trap it while a desktop tray is open", () => {
+  render(<DesktopOverlayHarness modal={false} />);
+  const trigger = screen.getByRole("button", { name: "Open desktop dialog" });
+  trigger.focus();
+  fireEvent.click(trigger);
+  expect(document.activeElement).toBe(trigger);
+  const pageControl = screen.getByRole("button", { name: "Page control" });
+  pageControl.focus();
+  expect(document.activeElement).toBe(pageControl);
+  fireEvent.keyDown(screen.getByLabelText("Desktop draft"), { key: "Escape" });
+  expect(screen.queryByLabelText("Desktop draft")).toBeNull();
+  expect(document.activeElement).toBe(pageControl);
 });

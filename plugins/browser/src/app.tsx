@@ -72,6 +72,7 @@ export function BrowserImportController(
     ExperimentalBrowserCookieImportSource[] | null
   >(null);
   const [loading, setLoading] = useState(false);
+  const [sourceError, setSourceError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"import" | "clear" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [tone, setTone] = useState<"success" | "error" | null>(null);
@@ -83,12 +84,15 @@ export function BrowserImportController(
   const input = useRef<HTMLInputElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const generation = useRef(0);
+  const lifecycleGeneration = useRef(0);
+  const openRef = useRef(false);
+  const busyRef = useRef<"import" | "clear" | null>(null);
   const runtime = useRef(props);
   runtime.current = props;
   const close = useCallback(() => {
     generation.current++;
+    openRef.current = false;
     setOpen(false);
-    setBusy(null);
     setLoading(false);
     runtime.current.experimental_setOverlayOpen(false);
   }, []);
@@ -113,10 +117,17 @@ export function BrowserImportController(
   });
   useEffect(() => {
     const signal = props.experimental_lifecycleSignal;
-    signal.addEventListener("abort", close);
-    return () => {
-      signal.removeEventListener("abort", close);
+    const dispose = () => {
+      lifecycleGeneration.current++;
+      busyRef.current = null;
+      setBusy(null);
       close();
+    };
+    signal.addEventListener("abort", dispose);
+    if (signal.aborted) dispose();
+    return () => {
+      signal.removeEventListener("abort", dispose);
+      dispose();
     };
   }, [props.experimental_lifecycleSignal, close]);
   useEffect(() => {
@@ -130,12 +141,15 @@ export function BrowserImportController(
       return;
     const controller = {
       open: () => {
+        if (openRef.current) return;
         const native = runtime.current.experimental_sessionImport;
         if (native === null) return;
+        openRef.current = true;
         const ticket = ++generation.current;
         setOpen(true);
         runtime.current.experimental_setOverlayOpen(true);
         setSources(null);
+        setSourceError(null);
         setMessage(null);
         setTone(null);
         setLoading(true);
@@ -148,8 +162,7 @@ export function BrowserImportController(
             (error) => {
               if (ticket !== generation.current) return;
               setSources([]);
-              setTone("error");
-              setMessage(
+              setSourceError(
                 error instanceof Error
                   ? error.message
                   : "Could not find browser profiles",
@@ -181,14 +194,20 @@ export function BrowserImportController(
     kind: "import" | "clear",
     operation: () => Promise<BrowserCookieImportRecord | null>,
   ) {
-    if (busy !== null) return;
-    const ticket = generation.current;
+    if (
+      busyRef.current !== null ||
+      !openRef.current ||
+      runtime.current.experimental_lifecycleSignal.aborted
+    )
+      return;
+    const ticket = lifecycleGeneration.current;
+    busyRef.current = kind;
     setBusy(kind);
     setMessage(null);
     setTone(null);
     try {
       const record = await operation();
-      if (ticket !== generation.current) return;
+      if (ticket !== lifecycleGeneration.current) return;
       setBrowserCookieImportRecord(record);
       setTone("success");
       setMessage(
@@ -197,13 +216,16 @@ export function BrowserImportController(
           : `Imported ${record.importedCookies} ${record.importedCookies === 1 ? "cookie" : "cookies"}`,
       );
     } catch (error) {
-      if (ticket !== generation.current) return;
+      if (ticket !== lifecycleGeneration.current) return;
       setTone("error");
       setMessage(
         error instanceof Error ? error.message : "Cookie import failed",
       );
     } finally {
-      if (ticket === generation.current) setBusy(null);
+      if (ticket === lifecycleGeneration.current) {
+        busyRef.current = null;
+        setBusy(null);
+      }
     }
   }
   const native = props.experimental_sessionImport;
@@ -213,13 +235,23 @@ export function BrowserImportController(
         ref={input}
         type="file"
         accept="application/json,.json"
+        aria-label="Cookie JSON file"
+        tabIndex={-1}
         className="sr-only"
         onChange={(event) => {
-          const file = event.currentTarget.files?.item(0);
+          const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
           if (!file || !native) return;
+          const lifecycle = lifecycleGeneration.current;
           void mutate("import", async () => {
-            const source: unknown = JSON.parse(await file.text());
+            const text = await file.text();
+            if (lifecycle !== lifecycleGeneration.current) {
+              throw new DOMException(
+                "Import controller was disposed",
+                "AbortError",
+              );
+            }
+            const source: unknown = JSON.parse(text);
             const result = await native.importCookies(
               parseBrowserCookieImport(source),
             );
@@ -236,6 +268,7 @@ export function BrowserImportController(
         isClearing={busy === "clear"}
         isImporting={busy === "import"}
         isLoadingSources={loading}
+        sourceError={sourceError}
         message={message}
         messageTone={tone}
         sources={sources}
@@ -293,7 +326,7 @@ export function BrowserImportController(
         role="dialog"
         aria-label="Import browser session"
         tabIndex={-1}
-        className="absolute inset-0 z-30 outline-none"
+        className="pointer-events-auto absolute inset-0 z-30 outline-none"
       >
         {content}
       </div>

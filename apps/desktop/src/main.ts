@@ -4,6 +4,7 @@ import { arch, homedir, release, type as osType } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   app,
+  BaseWindow,
   BrowserWindow,
   clipboard,
   dialog,
@@ -18,6 +19,13 @@ import {
   type IpcMainInvokeEvent,
   type WebContents,
 } from "electron";
+import {
+  createDesktopApplicationWindow,
+  isDesktopHostWindow,
+  desktopHostWindowForWebContents,
+  desktopHostWindows,
+  type DesktopHostWindow,
+} from "./desktop-application-window.js";
 import { autoUpdater } from "electron-updater";
 import {
   APP_SURFACE_DESKTOP,
@@ -463,12 +471,12 @@ function getCurrentDesktopInfo(): BbDesktopInfo | null {
 
 function resolveApplicationWindow(
   webContents: WebContents,
-): BrowserWindow | null {
-  return BrowserWindow.fromWebContents(webContents);
+): DesktopHostWindow | null {
+  return desktopHostWindowForWebContents(webContents);
 }
 
 function sendToApplicationRenderer(
-  browserWindow: BrowserWindow,
+  browserWindow: Pick<DesktopBrowserWindow, "webContents">,
   channel: string,
   payload: unknown,
 ): void {
@@ -503,7 +511,7 @@ function sendDesktopInfoChanged(): void {
   if (info === null) {
     return;
   }
-  for (const browserWindow of BrowserWindow.getAllWindows()) {
+  for (const browserWindow of desktopHostWindows()) {
     if (applicationWindowWebContentsIds.has(browserWindow.webContents.id)) {
       sendToApplicationRenderer(
         browserWindow,
@@ -534,7 +542,7 @@ function sendDesktopWindowStateChanged(
   browserWindow: DesktopBrowserWindow,
 ): void {
   sendToApplicationRenderer(
-    browserWindow as BrowserWindow,
+    browserWindow,
     BB_DESKTOP_WINDOW_STATE_CHANGED_CHANNEL,
     getDesktopWindowState(browserWindow),
   );
@@ -603,7 +611,7 @@ function shouldEnableServerDaemonLogsMenu(): boolean {
 
 const pendingCloseWindowRequests = new Map<number, NodeJS.Timeout>();
 
-function requestRendererWindowClose(browserWindow: BrowserWindow): void {
+function requestRendererWindowClose(browserWindow: DesktopHostWindow): void {
   const webContentsId = browserWindow.webContents.id;
   const pending = pendingCloseWindowRequests.get(webContentsId);
   if (pending !== undefined) {
@@ -626,7 +634,7 @@ function requestRendererWindowClose(browserWindow: BrowserWindow): void {
 }
 
 function closeFocusedDetachedDevTools(): void {
-  for (const browserWindow of BrowserWindow.getAllWindows()) {
+  for (const browserWindow of desktopHostWindows()) {
     if (browserWindow.webContents.isDevToolsFocused()) {
       browserWindow.webContents.closeDevTools();
       return;
@@ -634,16 +642,17 @@ function closeFocusedDetachedDevTools(): void {
   }
 }
 
-function getFocusedApplicationWindow(): BrowserWindow | null {
-  const focused = BrowserWindow.getFocusedWindow();
+function getFocusedApplicationWindow(): DesktopHostWindow | null {
+  const focused = BaseWindow.getFocusedWindow();
   if (
     focused !== null &&
+    isDesktopHostWindow(focused) &&
     !focused.isDestroyed() &&
     applicationWindowWebContentsIds.has(focused.webContents.id)
   ) {
     return focused;
   }
-  for (const browserWindow of BrowserWindow.getAllWindows()) {
+  for (const browserWindow of desktopHostWindows()) {
     if (
       !browserWindow.isDestroyed() &&
       applicationWindowWebContentsIds.has(browserWindow.webContents.id)
@@ -777,7 +786,7 @@ function installCurrentApplicationMenu(): void {
       }
     },
     reloadWindow(browserWindow, ignoreCache) {
-      if (!(browserWindow instanceof BrowserWindow)) {
+      if (!isDesktopHostWindow(browserWindow)) {
         return;
       }
       desktopBrowserViewManager?.prepareWindowReload(browserWindow);
@@ -793,7 +802,7 @@ function installCurrentApplicationMenu(): void {
         return;
       }
       if (
-        !(browserWindow instanceof BrowserWindow) ||
+        !isDesktopHostWindow(browserWindow) ||
         browserWindow === logViewerWindow
       ) {
         browserWindow.close();
@@ -1013,11 +1022,13 @@ function startRemoteSystemConfigSync(serverUrl: string): void {
 function registerApplicationWindow(browserWindow: DesktopBrowserWindow): void {
   const webContentsId = browserWindow.webContents.id;
   applicationWindowWebContentsIds.add(webContentsId);
-  const nativeWindow = BrowserWindow.fromId(browserWindow.id);
-  if (nativeWindow !== null) desktopBrowserBroker?.registerWindow(nativeWindow);
-  registerApplicationRendererReloadShortcut(
-    (browserWindow as BrowserWindow).webContents,
+  const nativeWindow = desktopHostWindows().find(
+    (window) => window.id === browserWindow.id,
   );
+  if (nativeWindow !== undefined) {
+    desktopBrowserBroker?.registerWindow(nativeWindow);
+    registerApplicationRendererReloadShortcut(nativeWindow.webContents);
+  }
   registerDesktopContextMenu({ webContents: browserWindow.webContents });
   browserWindow.on("enter-full-screen", () => {
     sendDesktopWindowStateChanged(browserWindow);
@@ -1658,7 +1669,7 @@ function registerDesktopUpdateIpc(): void {
 }
 
 interface DesktopBrowserWindowLifecycleArgs {
-  browserWindow: BrowserWindow;
+  browserWindow: DesktopHostWindow;
   manager: DesktopBrowserViewManager;
 }
 
@@ -2194,7 +2205,7 @@ async function runDesktopApp(): Promise<void> {
   registerDesktopUpdateIpc();
   desktopBrowserViewManager = createDesktopBrowserViewManager({
     dispatchAppCommand({ command, hostWebContentsId }) {
-      const browserWindow = BrowserWindow.getAllWindows().find(
+      const browserWindow = desktopHostWindows().find(
         (candidate) => candidate.webContents.id === hostWebContentsId,
       );
       if (browserWindow === undefined) {
@@ -2207,7 +2218,7 @@ async function runDesktopApp(): Promise<void> {
       );
     },
     focusHostWebContents(hostWebContentsId) {
-      const browserWindow = BrowserWindow.getAllWindows().find(
+      const browserWindow = desktopHostWindows().find(
         (candidate) => candidate.webContents.id === hostWebContentsId,
       );
       if (browserWindow !== undefined) {
@@ -2279,7 +2290,7 @@ async function runDesktopApp(): Promise<void> {
 
   const browserWindowCreator: DesktopBrowserWindowCreator = {
     create(options) {
-      return new BrowserWindow(options);
+      return createDesktopApplicationWindow(options);
     },
   };
   logViewerPreloadPath = resolvedLogViewerPreloadPath;
